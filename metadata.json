@@ -1,0 +1,6 @@
+{
+  "name": "اتوماسیون اینستاگرام | InstaFlow",
+  "description": "سامانه اتوماسیون دایرکت و کامنت اینستاگرام، فرم‌های مکالمه‌ای و مدیریت لید مبتنی بر API رسمی Meta",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -33,6 +33,8 @@ export interface Env {
   };
   META_WEBHOOK_VERIFY_TOKEN?: string;
   META_APP_SECRET?: string;
+  META_APP_ID?: string;
+  INSTAGRAM_ACCESS_TOKEN?: string;
   GEMINI_API_KEY?: string;
 }
 

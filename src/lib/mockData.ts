@@ -58,12 +58,12 @@ export const INITIAL_MEMBERS: WorkspaceMember[] = [
 ];
 
 export const INITIAL_INSTAGRAM_ACCOUNT: InstagramAccount = {
-  id: 'iga_shikposhan_main',
+  id: 'iga_usdhunter_main',
   workspaceId: 'ws_shikposhan',
-  metaIgUserId: '17841400012345678',
-  username: 'shikposhan.official',
-  displayName: 'بوتیک شیک‌پوشان | پوشاک زنانه',
-  profilePicUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&q=80',
+  metaIgUserId: '17841444316653291',
+  username: 'usdhunter.ir',
+  displayName: 'USD Hunter',
+  profilePicUrl: 'https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?auto=format&fit=crop&w=200&q=80',
   accountType: 'BUSINESS',
   authMode: 'instagram_login',
   graphHost: 'graph.instagram.com',
@@ -75,9 +75,9 @@ export const INITIAL_INSTAGRAM_ACCOUNT: InstagramAccount = {
   ],
   status: 'connected',
   webhookStatus: 'active',
-  tokenExpiresAt: '2026-11-20T12:00:00Z',
-  lastWebhookAt: new Date(Date.now() - 1000 * 60 * 5).toISOString(),
-  lastTokenCheckAt: new Date(Date.now() - 1000 * 60 * 60 * 2).toISOString(),
+  tokenExpiresAt: '2026-12-31T23:59:59Z',
+  lastWebhookAt: new Date(Date.now() - 1000 * 60 * 2).toISOString(),
+  lastTokenCheckAt: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
   createdAt: '2026-01-12T10:00:00Z',
 };
 

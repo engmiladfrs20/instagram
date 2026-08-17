@@ -61,6 +61,63 @@ let dlqItems: DLQItem[] = [...INITIAL_DLQ_ITEMS];
 let auditLogs: AuditLog[] = [...INITIAL_AUDIT_LOGS];
 let analytics = structuredClone(INITIAL_ANALYTICS);
 
+const AUTOMATION_TEXT_REPAIRS: Record<
+  string,
+  { keywords: string[]; triggerKeywords: string[]; publicReply?: string; privateReply?: string; faqReply?: string }
+> = {
+  auto_comment_price: {
+    keywords: ['قیمت', 'قیمتش', 'چنده', 'لینک', 'خرید', 'سفارش', 'تخفیف'],
+    triggerKeywords: ['قیمت', 'قیمتش', 'چنده', 'لینک', 'خرید', 'سفارش', 'تخفیف'],
+    publicReply: 'سلام عزیز دلم ❤️ جزئیات کامل و لینک سفارش به دایرکت شما ارسال شد 📩',
+    privateReply: 'سلام دوست عزیز! 🌸 مرسی از کامنت زیبایت. قیمت مانتو کتان تابستانه با تخفیف ۸۹۰,۰۰۰ تومان هستش.',
+  },
+  auto_lead_form_direct: {
+    keywords: ['سفارش', 'خرید آنلاین', 'فاکتور', 'ثبت سفارش'],
+    triggerKeywords: ['سفارش', 'ثبت سفارش'],
+  },
+  auto_faq_icebreaker: {
+    keywords: ['سلام', 'راهنما', 'آدرس', 'پست', 'کد رهگیری', 'ساعات کاری'],
+    triggerKeywords: ['سلام', 'راهنما', 'آدرس'],
+    faqReply: 'سلام! به دایرکت شیک‌پوشان خوش آمدید 🌸 چطور می‌تونم راهنمایی‌تون کنم؟',
+  },
+};
+
+function repairAutomationTextEncoding(): boolean {
+  let repaired = false;
+  for (const auto of automations) {
+    const repair = AUTOMATION_TEXT_REPAIRS[auto.id];
+    if (!repair) continue;
+    const versions = [auto.currentVersion, auto.publishedVersion].filter(Boolean);
+    const keywordValues = [
+      ...(auto.keywords || []),
+      ...versions.flatMap((version) => version!.nodes.flatMap((node) => (node.config.keywords || []).map(String))),
+    ];
+    const hasMojibake = keywordValues.some((value) => /[ظغ][^\s]{0,4}[طی]/.test(value));
+    if (!hasMojibake) continue;
+
+    auto.keywords = [...repair.keywords];
+    for (const version of versions) {
+      const trigger = version!.nodes.find((node) => node.type === 'TRIGGER');
+      if (trigger) trigger.config.keywords = [...repair.triggerKeywords];
+      if (repair.publicReply) {
+        const publicReply = version!.nodes.find((node) => node.type === 'REPLY_PUBLIC_COMMENT');
+        if (publicReply) publicReply.config.publicReplyText = repair.publicReply;
+      }
+      if (repair.privateReply) {
+        const privateReply = version!.nodes.find((node) => node.type === 'SEND_PRIVATE_REPLY');
+        if (privateReply) privateReply.config.text = repair.privateReply;
+      }
+      if (repair.faqReply) {
+        const faqReply = version!.nodes.find((node) => node.type === 'SEND_QUICK_REPLIES');
+        if (faqReply) faqReply.config.text = repair.faqReply;
+      }
+    }
+    auto.updatedAt = new Date().toISOString();
+    repaired = true;
+  }
+  return repaired;
+}
+
 function normalizeStateReferences() {
   const workspaceId = workspace.id;
   const instagramAccountId = instagramAccount.id;
@@ -86,6 +143,7 @@ function normalizeStateReferences() {
   auditLogs = auditLogs.map((log) => ({ ...log, workspaceId }));
 }
 
+repairAutomationTextEncoding();
 normalizeStateReferences();
 
 type WorkerStateSnapshot = {
@@ -124,9 +182,11 @@ async function loadWorkerState(env: Env) {
     dlqItems = saved.dlqItems || dlqItems;
     auditLogs = saved.auditLogs || auditLogs;
     analytics = saved.analytics || analytics;
+    const repaired = repairAutomationTextEncoding();
     normalizeStateReferences();
     processedFingerprints.clear();
     webhookEvents.forEach((event) => processedFingerprints.add(event.fingerprint));
+    if (repaired) await persistWorkerState(env);
   }
   stateLoaded = true;
 }
@@ -1079,7 +1139,8 @@ export default {
 
       if (!isDeduped && !isExpiredComment) {
         processedFingerprints.add(fingerprint);
-        await processIncomingWebhookEvent(payload, eventId, env);
+        // Simulations must never call Meta, even when production live mode is enabled.
+        await processIncomingWebhookEvent(payload, eventId, { ...env, META_LIVE_MODE: 'false' });
       } else if (isExpiredComment) {
         dlqItems.unshift({
           id: `dlq_${Date.now()}`,
@@ -1104,6 +1165,7 @@ export default {
           fingerprint,
           isDeduped,
           isExpiredComment,
+          dryRun: true,
           status: isDeduped ? 'deduped' : isExpiredComment ? 'policy_blocked' : 'processed',
           deliveredActionsCount: isDeduped || isExpiredComment
             ? 0

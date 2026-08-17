@@ -619,21 +619,36 @@ export default {
       const hash = await sha256Hex(`meta_${canonicalString}`);
       const fingerprint = hash.slice(0, 32);
 
-      const isDuplicate = processedFingerprints.has(fingerprint);
+      // An invalid request must never be classified as a duplicate. Otherwise a
+      // repeated unsigned payload can hide an authentication failure in analytics.
+      const isDuplicate = signatureValid && processedFingerprints.has(fingerprint);
       const eventId = `whe_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+
+      const eventType = payload?.entry?.[0]?.changes?.[0]?.field || 'messages';
+      console.log(
+        JSON.stringify({
+          event: 'meta_webhook_received',
+          eventId,
+          eventType,
+          signaturePresent: Boolean(signature),
+          signatureValid,
+          isDuplicate,
+          entryCount: Array.isArray(payload?.entry) ? payload.entry.length : 0,
+        }),
+      );
 
       const webhookEventRecord: WebhookEvent = {
         id: eventId,
         workspaceId: workspace.id,
         instagramAccountId: instagramAccount.id,
-        eventType: payload?.entry?.[0]?.changes?.[0]?.field || 'messages',
+        eventType,
         externalEventId: payload?.entry?.[0]?.id || `evt_${Date.now()}`,
         fingerprint,
         signatureValid,
         payload,
-        status: isDuplicate ? 'deduped' : signatureValid ? 'processed' : 'failed',
+        status: !signatureValid ? 'failed' : isDuplicate ? 'deduped' : 'processed',
         receivedAt: new Date().toISOString(),
-        processedAt: isDuplicate ? undefined : new Date().toISOString(),
+        processedAt: signatureValid && !isDuplicate ? new Date().toISOString() : undefined,
         errorCode: !signatureValid
           ? 'INVALID_SIGNATURE'
           : isDuplicate
@@ -645,10 +660,12 @@ export default {
 
       if (!signatureValid) {
         await persistWorkerState(env);
+        console.log(JSON.stringify({ event: 'meta_webhook_rejected', eventId, errorCode: 'INVALID_SIGNATURE' }));
         return jsonResponse({ error: 'Invalid webhook signature' }, 401);
       }
 
       if (isDuplicate) {
+        console.log(JSON.stringify({ event: 'meta_webhook_deduped', eventId, fingerprint }));
         return jsonResponse({ status: 'deduped', fingerprint });
       }
 
@@ -665,6 +682,16 @@ export default {
         webhookEventRecord.errorCode = error instanceof Error ? error.message.slice(0, 120) : 'PROCESSING_ERROR';
       }
       await persistWorkerState(env);
+
+      console.log(
+        JSON.stringify({
+          event: 'meta_webhook_processed',
+          eventId,
+          eventType: webhookEventRecord.eventType,
+          status: webhookEventRecord.status,
+          errorCode: webhookEventRecord.errorCode,
+        }),
+      );
 
       return jsonResponse({
         status: 'received',
@@ -684,6 +711,8 @@ export default {
         platform: 'Cloudflare Workers (Edge)',
         time: new Date().toISOString(),
         workspace: workspace.name,
+        liveMode: env.META_LIVE_MODE === 'true',
+        webhookPath: '/webhooks/meta',
       });
     }
 

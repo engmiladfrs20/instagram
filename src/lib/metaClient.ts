@@ -17,7 +17,7 @@ function getBaseUrl(options: MetaClientOptions): string {
 
 async function requestMeta<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  const body = await response.json().catch(() => ({}));
+  const body: any = await response.json().catch(() => ({}));
   if (!response.ok) {
     const message = body?.error?.message || `Meta API returned HTTP ${response.status}`;
     throw new Error(message);

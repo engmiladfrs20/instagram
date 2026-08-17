@@ -25,25 +25,17 @@ import {
   Product,
   DLQItem,
   AuditLog,
+  WorkspaceMember,
 } from './types';
 import { executableNodes, IncomingContext, matchesAutomation, runtimeVersion } from './lib/automationEngine';
 
-export interface Env {
-  ASSETS?: {
-    fetch: (req: Request) => Promise<Response>;
-  };
-  META_WEBHOOK_VERIFY_TOKEN?: string;
+type Env = Cloudflare.Env & {
   META_APP_SECRET?: string;
   META_APP_ID?: string;
   INSTAGRAM_ACCESS_TOKEN?: string;
   GEMINI_API_KEY?: string;
-  APP_ORIGIN?: string;
   META_LIVE_MODE?: string;
-  STATE_KV?: {
-    get: (key: string, type: 'json') => Promise<unknown>;
-    put: (key: string, value: string) => Promise<void>;
-  };
-}
+};
 
 // In-Memory Database State for Worker instance
 let workspace = { ...INITIAL_WORKSPACE };
@@ -182,9 +174,37 @@ type WorkerStateSnapshot = {
 };
 
 let stateLoaded = false;
-async function loadWorkerState(env: Env) {
-  if (stateLoaded || !env.STATE_KV) return;
+let stateWorkspaceId = INITIAL_WORKSPACE.id;
+
+async function readSnapshotFromStorage(env: Env, workspaceId: string): Promise<WorkerStateSnapshot | null> {
+  if (env.DB) {
+    const row = await env.DB.prepare('SELECT payload FROM workspace_state WHERE workspace_id = ?1').bind(workspaceId).first<{ payload: string }>();
+    if (row?.payload) return JSON.parse(row.payload) as WorkerStateSnapshot;
+  }
+  if (!env.STATE_KV) return null;
   const saved = await env.STATE_KV.get('instaflow-state', 'json') as WorkerStateSnapshot | null;
+  if (saved && env.DB && workspaceId === INITIAL_WORKSPACE.id) {
+    await env.DB.prepare(
+      'INSERT INTO workspace_state (workspace_id, payload, source, version, updated_at) VALUES (?1, ?2, ?3, 1, ?4) ON CONFLICT(workspace_id) DO NOTHING',
+    ).bind(workspaceId, JSON.stringify(saved), 'kv-migration', new Date().toISOString()).run();
+  }
+  return workspaceId === INITIAL_WORKSPACE.id ? saved : null;
+}
+
+async function writeSnapshotToStorage(env: Env, snapshot: WorkerStateSnapshot): Promise<void> {
+  const payload = JSON.stringify(snapshot);
+  if (env.DB) {
+    await env.DB.prepare(
+      'INSERT INTO workspace_state (workspace_id, payload, source, version, updated_at) VALUES (?1, ?2, ?3, 1, ?4) ON CONFLICT(workspace_id) DO UPDATE SET payload = excluded.payload, source = excluded.source, version = workspace_state.version + 1, updated_at = excluded.updated_at',
+    ).bind(snapshot.workspace.id, payload, 'd1', new Date().toISOString()).run();
+    return;
+  }
+  if (env.STATE_KV) await env.STATE_KV.put('instaflow-state', payload);
+}
+
+async function loadWorkerState(env: Env, workspaceId = INITIAL_WORKSPACE.id) {
+  if (stateLoaded && stateWorkspaceId === workspaceId) return;
+  const saved = await readSnapshotFromStorage(env, workspaceId);
   if (saved) {
     workspace = saved.workspace || workspace;
     members = saved.members || members;
@@ -205,12 +225,29 @@ async function loadWorkerState(env: Env) {
     processedFingerprints.clear();
     webhookEvents.forEach((event) => processedFingerprints.add(event.fingerprint));
     if (repaired) await persistWorkerState(env);
+  } else if (workspaceId !== INITIAL_WORKSPACE.id) {
+    workspace = { ...INITIAL_WORKSPACE, id: workspaceId, name: 'New workspace', slug: `workspace-${workspaceId.slice(-8)}`, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    members = [];
+    instagramAccount = { ...INITIAL_INSTAGRAM_ACCOUNT, id: `iga_${crypto.randomUUID()}`, workspaceId, metaIgUserId: '', username: '', displayName: '', status: 'disconnected', webhookStatus: 'pending', createdAt: new Date().toISOString() };
+    automations = [];
+    contacts = [];
+    conversations = [];
+    messages = [];
+    forms = [];
+    formSubmissions = [];
+    products = [];
+    webhookEvents = [];
+    dlqItems = [];
+    auditLogs = [];
+    analytics = structuredClone(INITIAL_ANALYTICS);
+    normalizeStateReferences();
+    await persistWorkerState(env);
   }
   stateLoaded = true;
+  stateWorkspaceId = workspace.id;
 }
 
 async function persistWorkerState(env: Env) {
-  if (!env.STATE_KV) return;
   const snapshot: WorkerStateSnapshot = {
     workspace,
     members,
@@ -227,7 +264,14 @@ async function persistWorkerState(env: Env) {
     auditLogs,
     analytics,
   };
-  await env.STATE_KV.put('instaflow-state', JSON.stringify(snapshot));
+  const payload = JSON.stringify(snapshot);
+  if (env.DB) {
+    await env.DB.prepare(
+      'INSERT INTO workspace_state (workspace_id, payload, source, version, updated_at) VALUES (?1, ?2, ?3, 1, ?4) ON CONFLICT(workspace_id) DO UPDATE SET payload = excluded.payload, source = excluded.source, version = workspace_state.version + 1, updated_at = excluded.updated_at',
+    ).bind(workspace.id, payload, 'd1', new Date().toISOString()).run();
+    return;
+  }
+  if (env.STATE_KV) await env.STATE_KV.put('instaflow-state', payload);
 }
 
 const processedFingerprints = new Set<string>(
@@ -258,6 +302,236 @@ async function sha256Hex(text: string): Promise<string> {
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
+}
+
+function base64UrlEncode(bytes: Uint8Array): string {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function base64UrlDecode(value: string): Uint8Array {
+  const padded = value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (value.length % 4)) % 4);
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+async function hashPassword(password: string): Promise<string> {
+  // Cloudflare Workers limits PBKDF2 derivations to 100,000 iterations.
+  const iterations = 100000;
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+  const derived = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations, hash: 'SHA-256' }, key, 256);
+  return `pbkdf2-sha256$${iterations}$${base64UrlEncode(salt)}$${base64UrlEncode(new Uint8Array(derived))}`;
+}
+
+async function verifyPassword(password: string, encoded: string): Promise<boolean> {
+  const [algorithm, iterationText, saltText, hashText] = encoded.split('$');
+  if (algorithm !== 'pbkdf2-sha256' || !iterationText || !saltText || !hashText) return false;
+  const iterations = Number(iterationText);
+  if (!Number.isInteger(iterations) || iterations !== 100000) return false;
+  const expected = base64UrlDecode(hashText);
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+  const derived = new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: base64UrlDecode(saltText), iterations, hash: 'SHA-256' }, key, 256));
+  let difference = derived.length ^ expected.length;
+  for (let index = 0; index < Math.max(derived.length, expected.length); index += 1) difference |= (derived[index] || 0) ^ (expected[index] || 0);
+  return difference === 0;
+}
+
+function getCookie(request: Request, name: string): string | undefined {
+  const cookieHeader = request.headers.get('Cookie') || '';
+  const match = cookieHeader.split(';').map((item) => item.trim()).find((item) => item.startsWith(`${name}=`));
+  return match ? decodeURIComponent(match.slice(name.length + 1)) : undefined;
+}
+
+function getSessionToken(request: Request): string | undefined {
+  const authorization = request.headers.get('Authorization') || '';
+  if (authorization.startsWith('Bearer ')) return authorization.slice(7).trim();
+  return getCookie(request, '__Host-instaflow_session');
+}
+
+interface AuthContext {
+  userId: string;
+  email: string;
+  displayName: string;
+  workspaceId: string;
+  role: string;
+}
+
+async function getAuthContext(request: Request, env: Env): Promise<AuthContext | null> {
+  if (!env.DB) return null;
+  const token = getSessionToken(request);
+  if (!token) return null;
+  const tokenHash = await sha256Hex(token);
+  const now = new Date().toISOString();
+  const row = await env.DB.prepare(
+    'SELECT s.user_id AS userId, u.email, u.display_name AS displayName, wm.workspace_id AS workspaceId, wm.role FROM sessions s JOIN users u ON u.id = s.user_id JOIN workspace_memberships wm ON wm.user_id = u.id AND wm.status = \'active\' WHERE s.token_hash = ?1 AND s.expires_at > ?2 AND u.status = \'active\' ORDER BY wm.role = \'owner\' DESC LIMIT 1',
+  ).bind(tokenHash, now).first<AuthContext>();
+  if (!row) return null;
+  await env.DB.prepare('UPDATE sessions SET last_seen_at = ?1 WHERE token_hash = ?2').bind(now, tokenHash).run();
+  return row;
+}
+
+async function createSession(env: Env, userId: string): Promise<{ token: string; expiresAt: string }> {
+  const token = base64UrlEncode(crypto.getRandomValues(new Uint8Array(32)));
+  const tokenHash = await sha256Hex(token);
+  const createdAt = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
+  await env.DB!.prepare('INSERT INTO sessions (token_hash, user_id, expires_at, created_at, last_seen_at) VALUES (?1, ?2, ?3, ?4, ?4)').bind(tokenHash, userId, expiresAt, createdAt).run();
+  return { token, expiresAt };
+}
+
+function sessionCookie(token: string, maxAge = 30 * 24 * 3600): string {
+  return `__Host-instaflow_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
+}
+
+function blankWorkspaceSnapshot(workspaceId: string, name: string, slug: string, member: WorkspaceMember): WorkerStateSnapshot {
+  const createdAt = new Date().toISOString();
+  const blankAccount = {
+    ...structuredClone(INITIAL_INSTAGRAM_ACCOUNT),
+    id: `iga_${crypto.randomUUID()}`,
+    workspaceId,
+    metaIgUserId: '',
+    username: '',
+    displayName: '',
+    status: 'disconnected' as const,
+    webhookStatus: 'pending' as const,
+    createdAt,
+  };
+  const snapshot: WorkerStateSnapshot = {
+    workspace: { ...structuredClone(INITIAL_WORKSPACE), id: workspaceId, name, slug, createdAt, updatedAt: createdAt },
+    members: [member],
+    instagramAccount: blankAccount,
+    automations: [],
+    contacts: [],
+    conversations: [],
+    messages: [],
+    forms: [],
+    formSubmissions: [],
+    products: [],
+    webhookEvents: [],
+    dlqItems: [],
+    auditLogs: [],
+    analytics: structuredClone(INITIAL_ANALYTICS),
+  };
+  return snapshot;
+}
+
+function jsonResponseWithCookie(data: unknown, cookie: string, status = 200, origin = 'https://usdhunter.ir'): Response {
+  const response = jsonResponse(data, status, origin);
+  response.headers.set('Set-Cookie', cookie);
+  return response;
+}
+
+interface AiSettingsRow {
+  workspace_id: string;
+  enabled: number;
+  model: string;
+  system_prompt: string;
+  temperature: number;
+  max_output_tokens: number;
+  daily_request_limit: number;
+  created_at: string;
+  updated_at: string;
+}
+
+async function getAiSettings(env: Env, workspaceId: string): Promise<AiSettingsRow | null> {
+  if (!env.DB) return null;
+  const existing = await env.DB.prepare('SELECT * FROM ai_settings WHERE workspace_id = ?1').bind(workspaceId).first<AiSettingsRow>();
+  if (existing) {
+    // Gemini's former 2.5 default is no longer available to new API users.
+    if (existing.model === 'gemini-2.5-flash') {
+      existing.model = 'gemini-3.6-flash';
+      await env.DB.prepare('UPDATE ai_settings SET model = ?1, updated_at = ?2 WHERE workspace_id = ?3').bind(existing.model, new Date().toISOString(), workspaceId).run();
+    }
+    return existing;
+  }
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    'INSERT INTO ai_settings (workspace_id, enabled, model, system_prompt, temperature, max_output_tokens, daily_request_limit, created_at, updated_at) VALUES (?1, 0, ?2, ?3, 0.2, 512, 100, ?4, ?4)',
+  ).bind(workspaceId, 'gemini-3.6-flash', 'You are a careful customer-support assistant. Answer only from the supplied business knowledge. Never invent prices, stock, delivery times, policies, or order status. If the answer is unknown, say that a human agent will follow up.', now).run();
+  return env.DB.prepare('SELECT * FROM ai_settings WHERE workspace_id = ?1').bind(workspaceId).first<AiSettingsRow>();
+}
+
+async function getKnowledgeItems(env: Env, workspaceId: string): Promise<Array<{ title: string; content: string }>> {
+  if (!env.DB) return [];
+  const result = await env.DB.prepare('SELECT title, content FROM knowledge_items WHERE workspace_id = ?1 AND status = \'active\' ORDER BY updated_at DESC LIMIT 40').bind(workspaceId).all<{ title: string; content: string }>();
+  return result.results || [];
+}
+
+async function askGemini(env: Env, workspaceId: string, userText: string, channel: 'dm' | 'comment'): Promise<{ text: string; model: string } | null> {
+  const apiKey = env.GEMINI_API_KEY?.trim();
+  if (!apiKey || !env.DB) return null;
+  const settings = await getAiSettings(env, workspaceId);
+  if (!settings || settings.enabled !== 1) return null;
+  const usageDate = new Date().toISOString().slice(0, 10);
+  const usage = await env.DB.prepare('SELECT request_count FROM ai_usage_daily WHERE workspace_id = ?1 AND usage_date = ?2').bind(workspaceId, usageDate).first<{ request_count: number }>();
+  if (Number(usage?.request_count || 0) >= Number(settings.daily_request_limit || 100)) return null;
+  const knowledge = await getKnowledgeItems(env, workspaceId);
+  const productsContext = products.slice(0, 50).map((product) => `${product.name}: ${product.description}; price=${product.priceMinor} ${product.currency}; status=${product.status}`).join('\n');
+  const knowledgeContext = knowledge.map((item) => `## ${item.title}\n${item.content}`).join('\n');
+  const prompt = `${settings.system_prompt}\n\nChannel: ${channel}\nBusiness products:\n${productsContext || 'No product data has been provided.'}\nBusiness knowledge:\n${knowledgeContext || 'No additional knowledge has been provided.'}\n\nCustomer message:\n${userText.slice(0, 2000)}\n\nReturn only the customer-facing answer in Persian, without markdown, internal reasoning, or invented facts.`;
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(settings.model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: settings.system_prompt }] },
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { temperature: Math.min(1, Math.max(0, Number(settings.temperature) || 0.2)), maxOutputTokens: Math.min(1024, Math.max(64, Number(settings.max_output_tokens) || 512)) },
+    }),
+  });
+  const result: any = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    console.log(JSON.stringify({ event: 'gemini_request_failed', status: response.status, code: result?.error?.status || result?.error?.code }));
+    return null;
+  }
+  const text = result?.candidates?.[0]?.content?.parts?.map((part: any) => part.text || '').join('').trim().slice(0, 1500);
+  if (!text) return null;
+  await env.DB.prepare(
+    'INSERT INTO ai_usage_daily (workspace_id, usage_date, request_count, input_tokens, output_tokens) VALUES (?1, ?2, 1, 0, 0) ON CONFLICT(workspace_id, usage_date) DO UPDATE SET request_count = ai_usage_daily.request_count + 1',
+  ).bind(workspaceId, usageDate).run();
+  return { text, model: settings.model };
+}
+
+async function deriveInstagramTokenKey(env: Env, workspaceId: string, usages: KeyUsage[]): Promise<CryptoKey> {
+  const secret = env.META_APP_SECRET?.trim();
+  if (!secret) throw new Error('META_APP_SECRET is not configured');
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${secret}:${workspaceId}`));
+  return crypto.subtle.importKey('raw', digest, { name: 'AES-GCM' }, false, usages);
+}
+
+async function encryptInstagramToken(env: Env, workspaceId: string, token: string): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveInstagramTokenKey(env, workspaceId, ['encrypt']);
+  const encrypted = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(token)));
+  return `${base64UrlEncode(iv)}.${base64UrlEncode(encrypted)}`;
+}
+
+async function decryptInstagramToken(env: Env, workspaceId: string, ciphertext: string): Promise<string> {
+  const [ivText, dataText] = ciphertext.split('.');
+  if (!ivText || !dataText) throw new Error('Invalid Instagram token ciphertext');
+  const key = await deriveInstagramTokenKey(env, workspaceId, ['decrypt']);
+  const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64UrlDecode(ivText) }, key, base64UrlDecode(dataText));
+  return new TextDecoder().decode(plaintext);
+}
+
+async function getInstagramAccessToken(env: Env): Promise<string | undefined> {
+  if (env.DB) {
+    const connection = await env.DB.prepare('SELECT access_token_ciphertext AS ciphertext FROM instagram_connections WHERE workspace_id = ?1 AND id = ?2 AND status = \'connected\' LIMIT 1').bind(workspace.id, instagramAccount.id).first<{ ciphertext: string }>();
+    if (connection?.ciphertext) {
+      try {
+        return await decryptInstagramToken(env, workspace.id, connection.ciphertext);
+      } catch (error) {
+        console.log(JSON.stringify({ event: 'instagram_token_decrypt_failed', workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) }));
+      }
+    }
+  }
+  // Keep the original single-workspace installation working during migration.
+  return workspace.id === INITIAL_WORKSPACE.id ? env.INSTAGRAM_ACCESS_TOKEN?.trim() : undefined;
+}
+
+function instagramOAuthRedirectUri(env: Env): string {
+  return `${(env.APP_ORIGIN || 'https://instaflow-worker.m-farokhi2729.workers.dev').replace(/\/$/, '')}/api/v1/instagram/oauth/callback`;
 }
 
 function jsonResponse(data: unknown, status = 200, origin = 'https://usdhunter.ir'): Response {
@@ -465,6 +739,52 @@ function processIncomingWebhookEventLegacy(payload: any, eventId: string) {
   }
 }
 
+async function deliverAiReply(
+  env: Env,
+  text: string,
+  recipientId: string,
+  conversation: Conversation,
+  eventId: string,
+): Promise<void> {
+  let status: Message['status'] = 'queued';
+  let externalId: string | undefined;
+  if (env.META_LIVE_MODE === 'true') {
+    const accessToken = await getInstagramAccessToken(env);
+    if (!accessToken) throw new Error('INSTAGRAM_ACCESS_TOKEN is not configured');
+    const url = `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/${encodeURIComponent(instagramAccount.metaIgUserId)}/messages?access_token=${encodeURIComponent(accessToken)}`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ recipient: { id: recipientId }, message: { text } }),
+    });
+    const result: any = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result?.error?.message || `Meta API returned HTTP ${response.status}`);
+    status = 'sent';
+    externalId = result.message_id || result.id;
+  }
+  const now = new Date().toISOString();
+  messages.push({
+    id: `msg_ai_${crypto.randomUUID()}`,
+    workspaceId: workspace.id,
+    instagramAccountId: instagramAccount.id,
+    conversationId: conversation.id,
+    externalMessageId: externalId,
+    direction: 'outbound',
+    messageType: 'text',
+    textBody: text,
+    content: { text },
+    status,
+    policyBasis: 'gemini_ai_assistant',
+    correlationId: `corr_${eventId}`,
+    sentAt: status === 'sent' ? now : undefined,
+    createdAt: now,
+  });
+  conversation.lastOutboundAt = now;
+  conversation.lastMessageAt = now;
+  conversation.lastMessagePreview = text;
+  if (status === 'sent') analytics.privateRepliesSent += 1;
+}
+
 async function processIncomingWebhookEvent(payload: any, eventId: string, env: Env): Promise<{ blocked: boolean }> {
   // Instagram sends comments through entry.changes, but direct messages
   // from the Instagram Messaging webhook arrive through entry.messaging.
@@ -582,7 +902,11 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
   const automation = automations
     .filter((item) => matchesAutomation(item, context))
     .sort((left, right) => left.priority - right.priority || left.id.localeCompare(right.id))[0];
-  if (!automation) return { blocked: false };
+  if (!automation) {
+    const aiReply = await askGemini(env, workspace.id, text, isComment ? 'comment' : 'dm');
+    if (aiReply && conversation.mode === 'automation') await deliverAiReply(env, aiReply.text, String(fromUser.id), conversation, eventId);
+    return { blocked: false };
+  }
   automation.runCount += 1;
   automation.lastTriggeredAt = now;
 
@@ -590,7 +914,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
     let status: Message['status'] = 'queued';
     let externalId: string | undefined;
     if (env.META_LIVE_MODE === 'true' && content.text) {
-      const accessToken = env.INSTAGRAM_ACCESS_TOKEN?.trim() || '';
+      const accessToken = (await getInstagramAccessToken(env)) || '';
       const isPublicCommentReply = messageType === 'public_comment_reply' && isComment && externalMessageId;
       const url = isPublicCommentReply
         ? `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/${encodeURIComponent(String(externalMessageId))}/replies?access_token=${encodeURIComponent(accessToken)}`
@@ -661,10 +985,25 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    await loadWorkerState(env);
     const url = new URL(request.url);
     const { pathname, searchParams } = url;
     const method = request.method;
+    let bootstrapWorkspaceId = INITIAL_WORKSPACE.id;
+    if (pathname === '/api/v1/instagram/oauth/callback' && env.DB) {
+      const oauthState = searchParams.get('state');
+      if (oauthState) {
+        const stateRow = await env.DB.prepare('SELECT workspace_id AS workspaceId FROM instagram_oauth_states WHERE state_hash = ?1 AND expires_at > ?2').bind(await sha256Hex(oauthState), new Date().toISOString()).first<{ workspaceId: string }>();
+        if (stateRow?.workspaceId) bootstrapWorkspaceId = stateRow.workspaceId;
+      }
+    }
+    let authContext: AuthContext | null = null;
+    try {
+      authContext = await getAuthContext(request, env);
+      await loadWorkerState(env, authContext?.workspaceId || bootstrapWorkspaceId);
+    } catch (error) {
+      console.log(JSON.stringify({ event: 'state_bootstrap_failed', error: error instanceof Error ? error.message : String(error) }));
+      return jsonResponse({ error: 'State bootstrap failed' }, 500);
+    }
 
     // Handle CORS Preflight
     if (method === 'OPTIONS') {
@@ -717,6 +1056,15 @@ export default {
         payload = JSON.parse(rawBody);
       } catch {
         // invalid json
+      }
+
+      // Meta's webhook entry id is the Instagram professional account id.
+      // Resolve it to the owning workspace before processing a multi-tenant event.
+      if (signatureValid && env.DB && payload?.entry?.[0]?.id) {
+        const routedConnection = await env.DB.prepare('SELECT workspace_id AS workspaceId FROM instagram_connections WHERE meta_ig_user_id = ?1 AND status = \'connected\' LIMIT 1').bind(String(payload.entry[0].id)).first<{ workspaceId: string }>();
+        if (routedConnection?.workspaceId && routedConnection.workspaceId !== workspace.id) {
+          await loadWorkerState(env, routedConnection.workspaceId);
+        }
       }
 
       const canonicalString = JSON.stringify(payload);
@@ -806,7 +1154,260 @@ export default {
     }
 
     // ==========================================
-    // 2. Application REST API Endpoints (/api/v1/*)
+    // 2. Authentication and tenant bootstrap
+    // ==========================================
+
+    if (pathname === '/api/v1/auth/register' && method === 'POST') {
+      if (!env.DB) return jsonResponse({ error: 'D1 database is not configured' }, 503);
+      try {
+        const body: any = await request.json().catch(() => ({}));
+        const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+        const displayName = typeof body.displayName === 'string' ? body.displayName.trim() : '';
+        const password = typeof body.password === 'string' ? body.password : '';
+        if (!/^\S+@\S+\.\S+$/.test(email)) return jsonResponse({ error: 'A valid email is required' }, 400);
+        if (password.length < 8) return jsonResponse({ error: 'Password must be at least 8 characters' }, 400);
+        if (displayName.length < 2) return jsonResponse({ error: 'Display name is required' }, 400);
+        const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?1').bind(email).first<{ id: string }>();
+        if (existing) return jsonResponse({ error: 'An account with this email already exists' }, 409);
+        const userCount = await env.DB.prepare('SELECT COUNT(*) AS count FROM users').first<{ count: number }>();
+        const firstUser = Number(userCount?.count || 0) === 0;
+        const userId = firstUser ? 'usr_owner_1' : `usr_${crypto.randomUUID()}`;
+        const workspaceId = firstUser ? INITIAL_WORKSPACE.id : `ws_${crypto.randomUUID()}`;
+        const workspaceName = typeof body.workspaceName === 'string' && body.workspaceName.trim() ? body.workspaceName.trim() : `${displayName} Workspace`;
+        const workspaceSlug = `${workspaceName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'workspace'}-${userId.slice(-6)}`;
+        const createdAt = new Date().toISOString();
+        const passwordHash = await hashPassword(password);
+        const member: WorkspaceMember = { workspaceId, userId, userName: displayName, userEmail: email, role: 'owner', status: 'active', createdAt };
+        const currentSnapshot: WorkerStateSnapshot = {
+          workspace,
+          members: [member],
+          instagramAccount,
+          automations,
+          contacts,
+          conversations,
+          messages,
+          forms,
+          formSubmissions,
+          products,
+          webhookEvents,
+          dlqItems,
+          auditLogs,
+          analytics,
+        };
+        const snapshot = firstUser
+          ? { ...currentSnapshot, members: [member], workspace: { ...currentSnapshot.workspace, updatedAt: createdAt } }
+          : blankWorkspaceSnapshot(workspaceId, workspaceName, workspaceSlug, member);
+        await env.DB.batch([
+          env.DB.prepare('INSERT INTO users (id, email, display_name, password_hash, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, \'active\', ?5, ?5)').bind(userId, email, displayName, passwordHash, createdAt),
+          env.DB.prepare('INSERT INTO workspace_memberships (workspace_id, user_id, role, status, created_at) VALUES (?1, ?2, \'owner\', \'active\', ?3)').bind(workspaceId, userId, createdAt),
+        ]);
+        await writeSnapshotToStorage(env, snapshot);
+        const session = await createSession(env, userId);
+        return jsonResponseWithCookie({ user: { id: userId, email, displayName }, workspace: snapshot.workspace }, sessionCookie(session.token), 201, env.APP_ORIGIN);
+      } catch (error) {
+        console.log(JSON.stringify({ event: 'auth_register_failed', error: error instanceof Error ? error.message : String(error) }));
+        return jsonResponse({ error: 'Registration failed' }, 500);
+      }
+    }
+
+    if (pathname === '/api/v1/auth/login' && method === 'POST') {
+      if (!env.DB) return jsonResponse({ error: 'D1 database is not configured' }, 503);
+      const body: any = await request.json().catch(() => ({}));
+      const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+      const password = typeof body.password === 'string' ? body.password : '';
+      const user = await env.DB.prepare('SELECT id, email, display_name AS displayName, password_hash AS passwordHash FROM users WHERE email = ?1 AND status = \'active\'').bind(email).first<{ id: string; email: string; displayName: string; passwordHash: string }>();
+      if (!user || !(await verifyPassword(password, user.passwordHash))) return jsonResponse({ error: 'Email or password is incorrect' }, 401);
+      const membership = await env.DB.prepare('SELECT workspace_id AS workspaceId, role FROM workspace_memberships WHERE user_id = ?1 AND status = \'active\' ORDER BY role = \'owner\' DESC LIMIT 1').bind(user.id).first<{ workspaceId: string; role: string }>();
+      if (!membership) return jsonResponse({ error: 'No active workspace is assigned to this account' }, 403);
+      const session = await createSession(env, user.id);
+      return jsonResponseWithCookie({ user: { id: user.id, email: user.email, displayName: user.displayName }, workspaceId: membership.workspaceId, role: membership.role }, sessionCookie(session.token), 200, env.APP_ORIGIN);
+    }
+
+    if (pathname === '/api/v1/auth/logout' && method === 'POST') {
+      const token = getSessionToken(request);
+      if (token && env.DB) await env.DB.prepare('DELETE FROM sessions WHERE token_hash = ?1').bind(await sha256Hex(token)).run();
+      return jsonResponseWithCookie({ ok: true }, sessionCookie('', 0), 200, env.APP_ORIGIN);
+    }
+
+    if (pathname === '/api/v1/auth/me' && method === 'GET') {
+      if (!authContext) return jsonResponse({ authenticated: false }, 401);
+      return jsonResponse({ authenticated: true, user: authContext }, 200, env.APP_ORIGIN);
+    }
+
+    const publicApiPath = pathname === '/api/v1/health' || pathname.startsWith('/api/v1/auth/') || pathname === '/api/v1/instagram/oauth/callback';
+    if (env.DB && pathname.startsWith('/api/v1/') && !publicApiPath && !authContext) {
+      return jsonResponse({ error: 'Authentication required' }, 401, env.APP_ORIGIN);
+    }
+
+    if (pathname === '/api/v1/instagram/oauth/start' && method === 'GET') {
+      if (!env.DB || !authContext) return jsonResponse({ error: 'Authentication required' }, 401, env.APP_ORIGIN);
+      if (!env.META_APP_ID || !env.META_APP_SECRET) return jsonResponse({ error: 'Meta OAuth is not configured' }, 503, env.APP_ORIGIN);
+      const state = base64UrlEncode(crypto.getRandomValues(new Uint8Array(32)));
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
+      await env.DB.prepare('DELETE FROM instagram_oauth_states WHERE expires_at <= ?1').bind(now.toISOString()).run();
+      await env.DB.prepare('INSERT INTO instagram_oauth_states (state_hash, workspace_id, expires_at, created_at) VALUES (?1, ?2, ?3, ?4)').bind(await sha256Hex(state), workspace.id, expiresAt, now.toISOString()).run();
+      const redirectUri = instagramOAuthRedirectUri(env);
+      const scope = ['instagram_business_basic', 'instagram_business_manage_messages', 'instagram_business_manage_comments'].join(',');
+      const authorizationUrl = `https://www.instagram.com/oauth/authorize?client_id=${encodeURIComponent(env.META_APP_ID)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}&state=${encodeURIComponent(state)}`;
+      return jsonResponse({ authorizationUrl, redirectUri, expiresAt }, 200, env.APP_ORIGIN);
+    }
+
+    if (pathname === '/api/v1/instagram/oauth/callback' && method === 'GET') {
+      if (!env.DB || !env.META_APP_ID || !env.META_APP_SECRET) return htmlResponse('<h1>Meta OAuth is not configured</h1>', 503);
+      const state = searchParams.get('state') || '';
+      const code = searchParams.get('code') || '';
+      const providerError = searchParams.get('error_description') || searchParams.get('error');
+      const stateRow = await env.DB.prepare('SELECT workspace_id AS workspaceId FROM instagram_oauth_states WHERE state_hash = ?1 AND expires_at > ?2').bind(await sha256Hex(state), new Date().toISOString()).first<{ workspaceId: string }>();
+      if (!state || !stateRow) return htmlResponse('<h1>OAuth state is invalid or expired</h1>', 400);
+      await env.DB.prepare('DELETE FROM instagram_oauth_states WHERE state_hash = ?1').bind(await sha256Hex(state)).run();
+      if (providerError || !code) return htmlResponse(`<h1>Instagram connection was cancelled</h1><p>${providerError || 'No authorization code was returned.'}</p>`, 400);
+      try {
+        const redirectUri = instagramOAuthRedirectUri(env);
+        const shortTokenResponse = await fetch('https://api.instagram.com/oauth/access_token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ client_id: env.META_APP_ID, client_secret: env.META_APP_SECRET, grant_type: 'authorization_code', redirect_uri: redirectUri, code }),
+        });
+        const shortToken = await shortTokenResponse.json<any>().catch(() => ({}));
+        if (!shortTokenResponse.ok || !shortToken.access_token) throw new Error(shortToken?.error_message || `Authorization code exchange failed (${shortTokenResponse.status})`);
+        const longTokenUrl = `https://graph.instagram.com/access_token?grant_type=ig_exchange_token&client_secret=${encodeURIComponent(env.META_APP_SECRET)}&access_token=${encodeURIComponent(shortToken.access_token)}`;
+        const longTokenResponse = await fetch(longTokenUrl);
+        const longToken = await longTokenResponse.json<any>().catch(() => ({}));
+        const accessToken = longToken.access_token || shortToken.access_token;
+        if (!longTokenResponse.ok || !accessToken) throw new Error(longToken?.error?.message || `Long-lived token exchange failed (${longTokenResponse.status})`);
+        const profileResponse = await fetch(`https://graph.instagram.com/${instagramAccount.graphVersion}/me?fields=id,username,account_type,user_id&access_token=${encodeURIComponent(accessToken)}`);
+        const profile = await profileResponse.json<any>().catch(() => ({}));
+        if (!profileResponse.ok || !profile.username) throw new Error(profile?.error?.message || `Instagram profile lookup failed (${profileResponse.status})`);
+        const now = new Date().toISOString();
+        const accountId = instagramAccount.metaIgUserId ? instagramAccount.id : `iga_${crypto.randomUUID()}`;
+        const tokenExpiresAt = new Date(Date.now() + Number(longToken.expires_in || 5_184_000) * 1000).toISOString();
+        const tokenCiphertext = await encryptInstagramToken(env, stateRow.workspaceId, accessToken);
+        const scopes = ['instagram_business_basic', 'instagram_business_manage_messages', 'instagram_business_manage_comments'];
+        await env.DB.prepare('INSERT INTO instagram_connections (id, workspace_id, meta_ig_user_id, username, display_name, profile_pic_url, account_type, access_token_ciphertext, token_expires_at, granted_scopes, status, webhook_status, last_token_check_at, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, \'connected\', \'active\', ?11, ?12, ?12) ON CONFLICT(id) DO UPDATE SET meta_ig_user_id = excluded.meta_ig_user_id, username = excluded.username, display_name = excluded.display_name, account_type = excluded.account_type, access_token_ciphertext = excluded.access_token_ciphertext, token_expires_at = excluded.token_expires_at, granted_scopes = excluded.granted_scopes, status = \'connected\', webhook_status = \'active\', last_token_check_at = excluded.last_token_check_at, updated_at = excluded.updated_at').bind(accountId, stateRow.workspaceId, String(profile.user_id || profile.id), String(profile.username), String(profile.username), null, String(profile.account_type || 'BUSINESS'), tokenCiphertext, tokenExpiresAt, JSON.stringify(scopes), now, now).run();
+        instagramAccount.id = accountId;
+        instagramAccount.workspaceId = stateRow.workspaceId;
+        instagramAccount.metaIgUserId = String(profile.user_id || profile.id);
+        instagramAccount.username = String(profile.username);
+        instagramAccount.displayName = String(profile.username);
+        instagramAccount.accountType = profile.account_type || 'BUSINESS';
+        instagramAccount.grantedScopes = scopes;
+        instagramAccount.status = 'connected';
+        instagramAccount.webhookStatus = 'active';
+        instagramAccount.tokenExpiresAt = tokenExpiresAt;
+        instagramAccount.lastTokenCheckAt = now;
+        await persistWorkerState(env);
+        return htmlResponse('<h1>Instagram connected successfully</h1><p>You can close this window and return to InstaFlow.</p><p><a href="/">Open InstaFlow</a></p>', 200);
+      } catch (error) {
+        console.log(JSON.stringify({ event: 'instagram_oauth_failed', workspaceId: stateRow.workspaceId, error: error instanceof Error ? error.message : String(error) }));
+        return htmlResponse('<h1>Instagram connection failed</h1><p>Meta did not complete the connection. Return to InstaFlow and try again.</p>', 502);
+      }
+    }
+
+    if (pathname === '/api/v1/admin/cleanup-test-data' && method === 'GET') {
+      return jsonResponse({
+        counts: {
+          automations: automations.length,
+          contacts: contacts.length,
+          conversations: conversations.length,
+          messages: messages.length,
+          forms: forms.length,
+          formSubmissions: formSubmissions.length,
+          products: products.length,
+          webhookEvents: webhookEvents.length,
+          dlqItems: dlqItems.length,
+          auditLogs: auditLogs.length,
+        },
+        instruction: 'POST with confirm=RESET_TEST_DATA to clear workspace demo and operational records.',
+      }, 200, env.APP_ORIGIN);
+    }
+
+    if (pathname === '/api/v1/admin/cleanup-test-data' && method === 'POST') {
+      if (authContext?.role !== 'owner') return jsonResponse({ error: 'Only the workspace owner can clean data' }, 403, env.APP_ORIGIN);
+      const body: any = await request.json().catch(() => ({}));
+      if (body.confirm !== 'RESET_TEST_DATA') return jsonResponse({ error: 'Confirmation is required' }, 400, env.APP_ORIGIN);
+      const before = { automations: automations.length, contacts: contacts.length, conversations: conversations.length, messages: messages.length, forms: forms.length, formSubmissions: formSubmissions.length, products: products.length, webhookEvents: webhookEvents.length, dlqItems: dlqItems.length, auditLogs: auditLogs.length };
+      const removeAutomations = body.removeAutomations === true;
+      contacts = [];
+      conversations = [];
+      messages = [];
+      forms = [];
+      formSubmissions = [];
+      products = [];
+      webhookEvents = [];
+      dlqItems = [];
+      auditLogs = [];
+      if (removeAutomations) automations = [];
+      analytics = { ...structuredClone(INITIAL_ANALYTICS), totalAutomations: automations.length, activeAutomations: automations.filter((automation) => automation.status === 'active').length, totalInboundMessages: 0, totalCommentsReceived: 0, privateRepliesSent: 0, publicRepliesSent: 0, leadsCaptured: 0, webhookDeliveryRate: 100, policyBlockRate: 0, conversionRate: 0, dailyStats: [] };
+      instagramAccount.lastWebhookAt = undefined;
+      instagramAccount.profilePicUrl = undefined;
+      workspace.updatedAt = new Date().toISOString();
+      processedFingerprints.clear();
+      await persistWorkerState(env);
+      return jsonResponse({ ok: true, before, after: { automations: automations.length, contacts: 0, conversations: 0, messages: 0, forms: 0, formSubmissions: 0, products: 0, webhookEvents: 0, dlqItems: 0, auditLogs: 0 } }, 200, env.APP_ORIGIN);
+    }
+
+    if (pathname === '/api/v1/ai/settings' && method === 'GET') {
+      const settings = await getAiSettings(env, workspace.id);
+      return jsonResponse({ settings: settings ? { ...settings, enabled: settings.enabled === 1 } : null }, 200, env.APP_ORIGIN);
+    }
+
+    if (pathname === '/api/v1/ai/settings' && method === 'PATCH') {
+      if (!env.DB) return jsonResponse({ error: 'D1 database is not configured' }, 503, env.APP_ORIGIN);
+      const body: any = await request.json().catch(() => ({}));
+      const current = await getAiSettings(env, workspace.id);
+      const now = new Date().toISOString();
+      const enabled = typeof body.enabled === 'boolean' ? (body.enabled ? 1 : 0) : Number(current?.enabled || 0);
+      const model = typeof body.model === 'string' && /^[a-zA-Z0-9._-]{3,80}$/.test(body.model.trim()) ? body.model.trim() : current?.model || 'gemini-3.6-flash';
+      const systemPrompt = typeof body.systemPrompt === 'string' ? body.systemPrompt.trim().slice(0, 8000) : current?.system_prompt || '';
+      const temperature = Math.min(1, Math.max(0, Number.isFinite(Number(body.temperature)) ? Number(body.temperature) : Number(current?.temperature || 0.2)));
+      const maxOutputTokens = Math.min(1024, Math.max(64, Number.isFinite(Number(body.maxOutputTokens)) ? Number(body.maxOutputTokens) : Number(current?.max_output_tokens || 512)));
+      const dailyLimit = Math.min(1000, Math.max(1, Number.isFinite(Number(body.dailyRequestLimit)) ? Number(body.dailyRequestLimit) : Number(current?.daily_request_limit || 100)));
+      await env.DB.prepare(
+        'INSERT INTO ai_settings (workspace_id, enabled, model, system_prompt, temperature, max_output_tokens, daily_request_limit, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8) ON CONFLICT(workspace_id) DO UPDATE SET enabled = excluded.enabled, model = excluded.model, system_prompt = excluded.system_prompt, temperature = excluded.temperature, max_output_tokens = excluded.max_output_tokens, daily_request_limit = excluded.daily_request_limit, updated_at = excluded.updated_at',
+      ).bind(workspace.id, enabled, model, systemPrompt, temperature, maxOutputTokens, dailyLimit, now).run();
+      const settings = await getAiSettings(env, workspace.id);
+      return jsonResponse({ settings: settings ? { ...settings, enabled: settings.enabled === 1 } : null }, 200, env.APP_ORIGIN);
+    }
+
+    if (pathname === '/api/v1/ai/knowledge' && method === 'GET') {
+      if (!env.DB) return jsonResponse({ items: [] }, 200, env.APP_ORIGIN);
+      const items = await env.DB.prepare('SELECT id, workspace_id AS workspaceId, title, content, status, created_at AS createdAt, updated_at AS updatedAt FROM knowledge_items WHERE workspace_id = ?1 AND status = \'active\' ORDER BY updated_at DESC').bind(workspace.id).all();
+      return jsonResponse({ items: items.results || [] }, 200, env.APP_ORIGIN);
+    }
+
+    if (pathname === '/api/v1/ai/knowledge' && method === 'POST') {
+      if (!env.DB) return jsonResponse({ error: 'D1 database is not configured' }, 503, env.APP_ORIGIN);
+      const body: any = await request.json().catch(() => ({}));
+      const title = typeof body.title === 'string' ? body.title.trim().slice(0, 160) : '';
+      const content = typeof body.content === 'string' ? body.content.trim().slice(0, 12000) : '';
+      if (!title || !content) return jsonResponse({ error: 'Title and content are required' }, 400, env.APP_ORIGIN);
+      const now = new Date().toISOString();
+      const id = `know_${crypto.randomUUID()}`;
+      await env.DB.prepare('INSERT INTO knowledge_items (id, workspace_id, title, content, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, \'active\', ?5, ?5)').bind(id, workspace.id, title, content, now).run();
+      return jsonResponse({ item: { id, workspaceId: workspace.id, title, content, status: 'active', createdAt: now, updatedAt: now } }, 201, env.APP_ORIGIN);
+    }
+
+    if (pathname.startsWith('/api/v1/ai/knowledge/') && method === 'DELETE') {
+      if (!env.DB) return jsonResponse({ error: 'D1 database is not configured' }, 503, env.APP_ORIGIN);
+      const id = pathname.split('/')[5];
+      await env.DB.prepare('UPDATE knowledge_items SET status = \'archived\', updated_at = ?1 WHERE id = ?2 AND workspace_id = ?3').bind(new Date().toISOString(), id, workspace.id).run();
+      return jsonResponse({ ok: true }, 200, env.APP_ORIGIN);
+    }
+
+    if (pathname === '/api/v1/ai/test' && method === 'POST') {
+      const body: any = await request.json().catch(() => ({}));
+      const text = typeof body.text === 'string' ? body.text.trim() : '';
+      if (!text) return jsonResponse({ error: 'Text is required' }, 400, env.APP_ORIGIN);
+      const settings = await getAiSettings(env, workspace.id);
+      if (!settings?.enabled) return jsonResponse({ error: 'Gemini assistant is disabled for this workspace' }, 409, env.APP_ORIGIN);
+      const result = await askGemini(env, workspace.id, text, body.channel === 'comment' ? 'comment' : 'dm');
+      if (!result) return jsonResponse({ error: 'Gemini did not return an answer' }, 502, env.APP_ORIGIN);
+      return jsonResponse({ answer: result.text, model: result.model }, 200, env.APP_ORIGIN);
+    }
+
+    // ==========================================
+    // 3. Application REST API Endpoints (/api/v1/*)
     // ==========================================
 
     if (pathname === '/api/v1/health' && method === 'GET') {
@@ -825,7 +1426,7 @@ export default {
     }
 
     if (pathname === '/api/v1/instagram/verify' && method === 'POST') {
-      const accessToken = env.INSTAGRAM_ACCESS_TOKEN?.trim();
+      const accessToken = await getInstagramAccessToken(env);
       if (!accessToken) return jsonResponse({ error: 'INSTAGRAM_ACCESS_TOKEN is not configured' }, 503);
       const verifyUrl = `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/me?fields=id,username,account_type,user_id&access_token=${encodeURIComponent(accessToken)}`;
       const response = await fetch(verifyUrl);

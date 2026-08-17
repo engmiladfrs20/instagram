@@ -11,6 +11,8 @@ import {
   Settings,
   Zap,
   CheckCircle2,
+  LogOut,
+  BrainCircuit,
 } from 'lucide-react';
 import { Workspace, InstagramAccount } from '../types';
 
@@ -21,6 +23,7 @@ interface NavigationProps {
   instagramAccount: InstagramAccount;
   unreadCount: number;
   activeAutomationCount: number;
+  onLogout: () => Promise<void>;
 }
 
 export const Navigation: React.FC<NavigationProps> = ({
@@ -30,8 +33,10 @@ export const Navigation: React.FC<NavigationProps> = ({
   instagramAccount,
   unreadCount,
   activeAutomationCount,
+  onLogout,
 }) => {
   const navItems = [
+    { id: 'ai', label: 'دستیار هوشمند Gemini', icon: BrainCircuit },
     { id: 'dashboard', label: 'داشبورد', icon: LayoutDashboard },
     { id: 'automations', label: 'اتوماسیون‌ها و گراف سناریو', icon: Workflow, badge: '۳ فعال' },
     { id: 'webhook_studio', label: 'تست و شبیه‌ساز وب‌هوک', icon: FlaskConical, highlight: true },
@@ -88,6 +93,14 @@ export const Navigation: React.FC<NavigationProps> = ({
                 </p>
               </div>
             </div>
+
+            <button
+              onClick={onLogout}
+              title="خروج"
+              className="p-2 rounded-lg border border-slate-700 text-slate-400 hover:text-rose-300 hover:border-rose-500/40 transition"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
 
             <button
               onClick={() => setCurrentTab('accounts')}

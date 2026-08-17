@@ -16,11 +16,13 @@ import { InstagramAccount } from '../types';
 interface InstagramAccountsViewProps {
   instagramAccount: InstagramAccount;
   onReauthorize: () => Promise<void>;
+  onStartOAuth: () => Promise<string>;
 }
 
 export const InstagramAccountsView: React.FC<InstagramAccountsViewProps> = ({
   instagramAccount,
   onReauthorize,
+  onStartOAuth,
 }) => {
   const [showOAuthModal, setShowOAuthModal] = useState<boolean>(false);
   const [oauthStep, setOauthStep] = useState<number>(1);
@@ -32,6 +34,16 @@ export const InstagramAccountsView: React.FC<InstagramAccountsViewProps> = ({
       await onReauthorize();
       setShowOAuthModal(false);
       setOauthStep(1);
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const handleStartOAuth = async () => {
+    setChecking(true);
+    try {
+      const authorizationUrl = await onStartOAuth();
+      window.location.assign(authorizationUrl);
     } finally {
       setChecking(false);
     }
@@ -195,7 +207,8 @@ export const InstagramAccountsView: React.FC<InstagramAccountsViewProps> = ({
                 </div>
 
                 <button
-                  onClick={() => setOauthStep(2)}
+                  onClick={handleStartOAuth}
+                  disabled={checking}
                   className="w-full py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold transition"
                 >
                   تایید و اعطای مجوزها در Meta

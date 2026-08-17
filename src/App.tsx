@@ -10,6 +10,8 @@ import { FormsView } from './components/FormsView';
 import { ProductsView } from './components/ProductsView';
 import { OperationsView } from './components/OperationsView';
 import { SettingsView } from './components/SettingsView';
+import { AuthView } from './components/AuthView';
+import { AISettingsView } from './components/AISettingsView';
 
 import {
   Workspace,
@@ -30,6 +32,8 @@ import {
 export default function App() {
   const [currentTab, setCurrentTab] = useState<string>('dashboard');
   const [loading, setLoading] = useState<boolean>(true);
+  const [authLoading, setAuthLoading] = useState<boolean>(true);
+  const [authUser, setAuthUser] = useState<any>(null);
 
   // App State
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
@@ -45,11 +49,13 @@ export default function App() {
   const [dlqItems, setDlqItems] = useState<DLQItem[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [webhookEvents, setWebhookEvents] = useState<WebhookEvent[]>([]);
+  const [aiSettings, setAiSettings] = useState<any | null>(null);
+  const [knowledgeItems, setKnowledgeItems] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  const requestJson = async (input: RequestInfo | URL, init?: RequestInit) => {
+  const requestJson = async <T = any>(input: RequestInfo | URL, init?: RequestInit): Promise<T> => {
     const response = await fetch(input, init);
-    const data = await response.json().catch(() => ({}));
+    const data: any = await response.json().catch(() => ({}));
     if (!response.ok) {
       const suffix = data.code ? ` (Meta code ${data.code})` : '';
       const error = new Error(`${data.error || `Request failed (${response.status})`}${suffix}`) as Error & { responseData?: any };
@@ -85,6 +91,17 @@ export default function App() {
       setDlqItems(analyticsData.dlqItems || []);
       setWebhookEvents(analyticsData.webhookEvents || []);
 
+      try {
+        const [aiData, knowledgeData] = await Promise.all([
+          requestJson('/api/v1/ai/settings'),
+          requestJson('/api/v1/ai/knowledge'),
+        ]);
+        setAiSettings(aiData.settings || null);
+        setKnowledgeItems(knowledgeData.items || []);
+      } catch (aiError) {
+        console.warn('AI settings are not available in this environment:', aiError);
+      }
+
       const messageResponses = await Promise.all(
         (convData.conversations || []).map((conversation: Conversation) =>
           requestJson(`/api/v1/conversations/${conversation.id}/messages`)
@@ -100,8 +117,36 @@ export default function App() {
   };
 
   useEffect(() => {
-    fetchData();
+    requestJson('/api/v1/auth/me')
+      .then((data) => setAuthUser(data.user))
+      .catch(() => {
+        if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+          setAuthUser({ id: 'local', displayName: 'Local developer', email: 'local@example.com' });
+        } else {
+          setAuthUser(null);
+        }
+      })
+      .finally(() => setAuthLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (authUser) fetchData();
+  }, [authUser?.id]);
+
+  const handleAuthenticated = (payload: any) => {
+    setAuthUser(payload.user);
+    setLoading(true);
+  };
+
+  const handleLogout = async () => {
+    try {
+      await requestJson('/api/v1/auth/logout', { method: 'POST' });
+    } finally {
+      setAuthUser(null);
+      setWorkspace(null);
+      setInstagramAccount(null);
+    }
+  };
 
   // Handler: Save Automation Changes
   const handleSaveAutomation = async (updatedAuto: Automation) => {
@@ -241,6 +286,60 @@ export default function App() {
     }
   };
 
+  const handleStartInstagramOAuth = async () => {
+    const data = await requestJson('/api/v1/instagram/oauth/start');
+    return data.authorizationUrl as string;
+  };
+
+  const handleSaveAiSettings = async (settings: any) => {
+    const data = await requestJson('/api/v1/ai/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    });
+    setAiSettings(data.settings);
+  };
+
+  const handleAddKnowledge = async (title: string, content: string) => {
+    const data = await requestJson('/api/v1/ai/knowledge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, content }),
+    });
+    setKnowledgeItems((items) => [data.item, ...items]);
+  };
+
+  const handleDeleteKnowledge = async (id: string) => {
+    await requestJson(`/api/v1/ai/knowledge/${id}`, { method: 'DELETE' });
+    setKnowledgeItems((items) => items.filter((item) => item.id !== id));
+  };
+
+  const handleAiTest = async (text: string) => {
+    const data = await requestJson('/api/v1/ai/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, channel: 'dm' }),
+    });
+    return data.answer || '';
+  };
+
+  const handleCleanupTestData = async () => {
+    await requestJson('/api/v1/admin/cleanup-test-data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: 'RESET_TEST_DATA', removeAutomations: true }),
+    });
+    await fetchData();
+  };
+
+  if (authLoading) {
+    return <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center">در حال آماده‌سازی ورود...</div>;
+  }
+
+  if (!authUser) {
+    return <AuthView requestJson={requestJson} onAuthenticated={handleAuthenticated} />;
+  }
+
   if (error && (!workspace || !instagramAccount || !analytics)) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center font-sans">
@@ -277,6 +376,7 @@ export default function App() {
         instagramAccount={instagramAccount}
         unreadCount={unreadCount}
         activeAutomationCount={automations.filter((automation) => automation.status === 'active').length}
+        onLogout={handleLogout}
       />
 
       {/* Main Body View Container */}
@@ -327,6 +427,7 @@ export default function App() {
               <InstagramAccountsView
                 instagramAccount={instagramAccount}
                 onReauthorize={handleVerifyInstagram}
+                onStartOAuth={handleStartInstagramOAuth}
               />
             )}
 
@@ -346,8 +447,19 @@ export default function App() {
               />
             )}
 
+            {currentTab === 'ai' && (
+              <AISettingsView
+                settings={aiSettings}
+                knowledgeItems={knowledgeItems}
+                onSaveSettings={handleSaveAiSettings}
+                onAddKnowledge={handleAddKnowledge}
+                onDeleteKnowledge={handleDeleteKnowledge}
+                onTest={handleAiTest}
+              />
+            )}
+
             {currentTab === 'settings' && (
-              <SettingsView workspace={workspace} members={members} />
+              <SettingsView workspace={workspace} members={members} onCleanup={handleCleanupTestData} />
             )}
           </motion.div>
         </AnimatePresence>

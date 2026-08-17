@@ -1,13 +1,26 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Settings, Users, Key, Zap, Shield } from 'lucide-react';
 import { Workspace, WorkspaceMember } from '../types';
 
 interface SettingsViewProps {
   workspace: Workspace;
   members: WorkspaceMember[];
+  onCleanup: () => Promise<void>;
 }
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ workspace, members }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({ workspace, members, onCleanup }) => {
+  const [cleaning, setCleaning] = useState(false);
+
+  const handleCleanup = async () => {
+    if (!window.confirm('اطلاعات آزمایشی و عملیاتی این Workspace پاک شود؟')) return;
+    setCleaning(true);
+    try {
+      await onCleanup();
+    } finally {
+      setCleaning(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -24,6 +37,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ workspace, members }
               مدیریت دسترسی‌های اعضای تیم، کلیدهای محرمانه Meta API و پلن اشتراک چندمستاجری (Multi-Tenant Workspace).
             </p>
           </div>
+          <button onClick={handleCleanup} disabled={cleaning} className="w-full rounded-xl border border-rose-500/30 bg-rose-500/5 px-4 py-3 text-xs font-bold text-rose-200 hover:bg-rose-500/10 disabled:opacity-50">
+            {cleaning ? 'در حال پاک‌سازی...' : 'پاک‌سازی داده‌های آزمایشی Workspace'}
+          </button>
         </div>
       </div>
 
@@ -64,7 +80,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ workspace, members }
               <input
                 type="text"
                 readOnly
-                value="981273912038910"
+                value="Configured in Cloudflare"
                 className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-300 font-mono dir-ltr"
               />
             </div>
@@ -74,7 +90,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ workspace, members }
               <input
                 type="text"
                 readOnly
-                value="instaflow_secret_verify_token_2026"
+                value="Stored as a Worker secret"
                 className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-300 font-mono dir-ltr"
               />
             </div>
@@ -84,7 +100,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ workspace, members }
               <input
                 type="password"
                 readOnly
-                value="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                value="Hidden"
                 className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-300 font-mono dir-ltr"
               />
             </div>

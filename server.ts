@@ -1,5 +1,6 @@
 import express, { Request, Response } from 'express';
-import crypto from 'crypto';
+import * as nodeCrypto from 'crypto';
+const crypto: any = nodeCrypto;
 import fs from 'fs';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';

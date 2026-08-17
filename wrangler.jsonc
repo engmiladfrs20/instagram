@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "instaflow-worker",
   "main": "src/worker.ts",
-  "compatibility_date": "2024-09-23",
+  "compatibility_date": "2026-08-17",
   "compatibility_flags": ["nodejs_compat"],
   "observability": {
     "enabled": true,
@@ -19,7 +19,16 @@
       "id": "c533e2d168394c719f2eab35af597e23"
     }
   ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "instaflow-db",
+      "database_id": "b8047d26-e758-44bd-a016-068c9839892f",
+      "migrations_dir": "./migrations"
+    }
+  ],
   "vars": {
-    "META_WEBHOOK_VERIFY_TOKEN": "instaflow_secret_verify_token_2026"
+    "META_WEBHOOK_VERIFY_TOKEN": "instaflow_secret_verify_token_2026",
+    "APP_ORIGIN": "https://instaflow-worker.m-farokhi2729.workers.dev"
   }
 }

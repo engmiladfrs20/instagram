@@ -50,7 +50,12 @@ export default function App() {
   const requestJson = async (input: RequestInfo | URL, init?: RequestInit) => {
     const response = await fetch(input, init);
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+    if (!response.ok) {
+      const suffix = data.code ? ` (Meta code ${data.code})` : '';
+      const error = new Error(`${data.error || `Request failed (${response.status})`}${suffix}`) as Error & { responseData?: any };
+      error.responseData = data;
+      throw error;
+    }
     return data;
   };
 
@@ -230,6 +235,8 @@ export default function App() {
       setInstagramAccount(data.instagramAccount);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'اتصال اینستاگرام ناموفق بود');
+      const responseData = (e as Error & { responseData?: { instagramAccount?: InstagramAccount } }).responseData;
+      if (responseData?.instagramAccount) setInstagramAccount(responseData.instagramAccount);
       throw e;
     }
   };

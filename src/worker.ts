@@ -690,7 +690,18 @@ export default {
       const profile: any = await response.json().catch(() => ({}));
       if (!response.ok) {
         instagramAccount.status = 'reauth_required';
-        return jsonResponse({ error: profile?.error?.message || `Instagram verification failed (${response.status})` }, 502);
+        instagramAccount.webhookStatus = 'failed';
+        instagramAccount.lastTokenCheckAt = new Date().toISOString();
+        await persistWorkerState(env);
+        const metaError = profile?.error || {};
+        return jsonResponse({
+          error: metaError.message || `Instagram verification failed (${response.status})`,
+          code: metaError.code,
+          type: metaError.type,
+          fbtraceId: metaError.fbtrace_id,
+          reauthRequired: true,
+          instagramAccount,
+        }, 502);
       }
       instagramAccount.metaIgUserId = profile.user_id || profile.id;
       instagramAccount.username = profile.username;

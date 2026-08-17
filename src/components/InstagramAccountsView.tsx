@@ -37,6 +37,10 @@ export const InstagramAccountsView: React.FC<InstagramAccountsViewProps> = ({
     }
   };
 
+  const isConnected = instagramAccount.status === 'connected';
+  const statusLabel = isConnected ? 'متصل (Connected)' : instagramAccount.status === 'reauth_required' ? 'نیازمند اتصال مجدد' : 'قطع شده';
+  const webhookIsActive = instagramAccount.webhookStatus === 'active';
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -80,8 +84,8 @@ export const InstagramAccountsView: React.FC<InstagramAccountsViewProps> = ({
               <div className="flex items-center space-x-2 space-x-reverse">
                 <h2 className="text-base font-bold text-white">{instagramAccount.displayName}</h2>
                 <span className="text-xs text-slate-400 font-mono">@{instagramAccount.username}</span>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  متصل (Connected)
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${isConnected ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-300 border-rose-500/20'}`}>
+                  {statusLabel}
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-1">
@@ -99,6 +103,18 @@ export const InstagramAccountsView: React.FC<InstagramAccountsViewProps> = ({
             </button>
           </div>
         </div>
+
+        {!isConnected && (
+          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-xs text-rose-100">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-300 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold">دسترسی Meta مسدود یا منقضی شده است.</p>
+                <p className="mt-1 text-rose-200/80">یک Access Token تازه از Meta بگیرید و سپس دوباره «بررسی Token» را اجرا کنید.</p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Granted Scopes List */}
         <div>
@@ -124,9 +140,9 @@ export const InstagramAccountsView: React.FC<InstagramAccountsViewProps> = ({
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
           <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-1">
             <span className="text-slate-400 block text-[11px]">وضعیت Webhook Ingress</span>
-            <span className="text-emerald-400 font-bold flex items-center space-x-1 space-x-reverse">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-              <span>فعال و ثبت شده در Meta</span>
+            <span className={`${webhookIsActive ? 'text-emerald-400' : 'text-rose-300'} font-bold flex items-center space-x-1 space-x-reverse`}>
+              <span className={`w-2 h-2 rounded-full ${webhookIsActive ? 'bg-emerald-400 animate-ping' : 'bg-rose-400'}`} />
+              <span>{webhookIsActive ? 'فعال و ثبت شده در Meta' : 'نیازمند بررسی مجدد'}</span>
             </span>
           </div>
 

@@ -255,6 +255,27 @@ function jsonResponse(data: unknown, status = 200, origin = 'https://usdhunter.i
   });
 }
 
+function htmlResponse(html: string, status = 200): Response {
+  return new Response(html, {
+    status,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'public, max-age=300',
+      'X-Content-Type-Options': 'nosniff',
+    },
+  });
+}
+
+const LEGAL_PAGE_STYLE = `
+  body { font-family: Arial, sans-serif; line-height: 1.7; max-width: 860px; margin: 40px auto; padding: 0 20px; color: #172033; }
+  h1 { color: #5b21b6; } h2 { margin-top: 28px; } a { color: #6d28d9; }
+  .muted { color: #667085; } .box { background: #f5f3ff; padding: 16px; border-radius: 12px; }
+`;
+
+const PRIVACY_POLICY_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>InstaFlow Privacy Policy</title><style>${LEGAL_PAGE_STYLE}</style></head><body><h1>InstaFlow Privacy Policy</h1><p class="muted">Last updated: August 17, 2026</p><p>InstaFlow is operated for USD Hunter to manage an Instagram Professional account and automate customer conversations.</p><h2>Information we process</h2><p>When you interact with the connected Instagram account, InstaFlow may process your public Instagram profile identifier, username, comments, direct messages, message timestamps, conversation history, tags, and automation responses.</p><h2>How we use information</h2><p>We use this information only to receive webhook events, respond to comments and messages, manage customer conversations, and operate the requested automation workflows. We do not sell personal information or use it for advertising profiling.</p><h2>Storage and security</h2><p>Operational data is stored in the connected Cloudflare Worker and its private storage. Access tokens and application secrets are stored as protected Cloudflare secrets and are not included in the source repository.</p><h2>Retention and deletion</h2><p>Data is retained only as long as needed to operate the workspace and its conversation history. To request deletion of your information, visit <a href="/data-deletion">the data deletion page</a> or send a deletion request through the connected Instagram account.</p><h2>Contact</h2><p>For privacy requests, contact the USD Hunter team through the Instagram account <a href="https://www.instagram.com/usdhunter.ir/">@usdhunter.ir</a>.</p><div class="box">This policy applies to the InstaFlow Instagram integration and its connected automation dashboard.</div></body></html>`;
+
+const DATA_DELETION_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>InstaFlow Data Deletion</title><style>${LEGAL_PAGE_STYLE}</style></head><body><h1>InstaFlow Data Deletion</h1><p>To request deletion of Instagram data processed by InstaFlow, send a direct message to <a href="https://www.instagram.com/usdhunter.ir/">@usdhunter.ir</a> containing the words <strong>delete my data</strong> and your Instagram username.</p><p>We will remove the matching contact, conversation, messages, tags, and related operational records from the workspace, subject to security, legal, and fraud-prevention requirements.</p><p><a href="/privacy-policy">Back to Privacy Policy</a></p></body></html>`;
+
 function processIncomingWebhookEventLegacy(payload: any, eventId: string) {
   const change = payload?.entry?.[0]?.changes?.[0];
   const field = change?.field;
@@ -1194,6 +1215,14 @@ export default {
     // ==========================================
     // 3. Static Assets & SPA Fallback (Cloudflare Assets)
     // ==========================================
+    if (method === 'GET' && pathname === '/privacy-policy') {
+      return htmlResponse(PRIVACY_POLICY_HTML);
+    }
+
+    if (method === 'GET' && pathname === '/data-deletion') {
+      return htmlResponse(DATA_DELETION_HTML);
+    }
+
     if (env.ASSETS) {
       return await env.ASSETS.fetch(request);
     }

@@ -9,6 +9,12 @@
     "binding": "ASSETS",
     "not_found_handling": "single-page-application"
   },
+  "kv_namespaces": [
+    {
+      "binding": "STATE_KV",
+      "id": "c533e2d168394c719f2eab35af597e23"
+    }
+  ],
   "vars": {
     "META_WEBHOOK_VERIFY_TOKEN": "instaflow_secret_verify_token_2026"
   }

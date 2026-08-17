@@ -44,3 +44,16 @@ export async function sendInstagramText(
     body: JSON.stringify({ recipient: { id: options.recipientId }, message: { text: options.text } }),
   });
 }
+
+export async function replyToInstagramComment(
+  options: MetaClientOptions & { commentId: string; text: string },
+): Promise<{ id?: string }> {
+  const accessToken = options.accessToken?.trim();
+  if (!accessToken) throw new Error('INSTAGRAM_ACCESS_TOKEN is not configured');
+  const url = `${getBaseUrl(options)}/${encodeURIComponent(options.commentId)}/replies?access_token=${encodeURIComponent(accessToken)}`;
+  return requestMeta<{ id?: string }>(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message: options.text }),
+  });
+}

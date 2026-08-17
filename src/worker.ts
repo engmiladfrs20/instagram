@@ -485,18 +485,25 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
   const recordOutbound = async (messageType: Message['messageType'], content: Message['content'], policyBasis: string) => {
     let status: Message['status'] = 'queued';
     let externalId: string | undefined;
-    if (env.META_LIVE_MODE === 'true' && messageType !== 'public_comment_reply' && content.text) {
+    if (env.META_LIVE_MODE === 'true' && content.text) {
       const accessToken = env.INSTAGRAM_ACCESS_TOKEN?.trim() || '';
-      const url = `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/${encodeURIComponent(instagramAccount.metaIgUserId)}/messages?access_token=${encodeURIComponent(accessToken)}`;
+      const isPublicCommentReply = messageType === 'public_comment_reply' && isComment && externalMessageId;
+      const url = isPublicCommentReply
+        ? `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/${encodeURIComponent(String(externalMessageId))}/replies?access_token=${encodeURIComponent(accessToken)}`
+        : `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/${encodeURIComponent(instagramAccount.metaIgUserId)}/messages?access_token=${encodeURIComponent(accessToken)}`;
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recipient: { id: String(fromUser.id) }, message: { text: content.text } }),
+        body: JSON.stringify(
+          isPublicCommentReply
+            ? { message: content.text }
+            : { recipient: { id: String(fromUser.id) }, message: { text: content.text } },
+        ),
       });
       const result: any = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result?.error?.message || `Meta API returned HTTP ${response.status}`);
       status = 'sent';
-      externalId = result.message_id;
+      externalId = result.message_id || result.id;
     }
     const sentAt = new Date().toISOString();
     messages.push({

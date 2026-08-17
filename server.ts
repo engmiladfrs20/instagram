@@ -38,7 +38,7 @@ import {
   matchesAutomation,
   runtimeVersion,
 } from './src/lib/automationEngine';
-import { sendInstagramText, verifyInstagramAccount } from './src/lib/metaClient';
+import { replyToInstagramComment, sendInstagramText, verifyInstagramAccount } from './src/lib/metaClient';
 
 const app = express();
 const PORT = 3000;
@@ -591,18 +591,28 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
     let externalId: string | undefined;
     let error: Error | undefined;
     const liveMode = process.env.META_LIVE_MODE === 'true';
-    if (liveMode && nodeType !== 'public_comment_reply') {
+    if (liveMode) {
       try {
-        const response = await sendInstagramText({
-          accessToken: process.env.INSTAGRAM_ACCESS_TOKEN,
-          graphHost: instagramAccount.graphHost,
-          graphVersion: instagramAccount.graphVersion,
-          instagramUserId: instagramAccount.metaIgUserId,
-          recipientId: String(fromUser.id),
-          text: body.text || '',
+        const response = nodeType === 'public_comment_reply'
+          ? await replyToInstagramComment({
+              accessToken: process.env.INSTAGRAM_ACCESS_TOKEN,
+              graphHost: instagramAccount.graphHost,
+              graphVersion: instagramAccount.graphVersion,
+              commentId: String(externalMessageId),
+              text: body.text || '',
+            })
+          : await sendInstagramText({
+              accessToken: process.env.INSTAGRAM_ACCESS_TOKEN,
+              graphHost: instagramAccount.graphHost,
+              graphVersion: instagramAccount.graphVersion,
+              instagramUserId: instagramAccount.metaIgUserId,
+              recipientId: String(fromUser.id),
+              text: body.text || '',
         });
         status = 'sent';
-        externalId = response.message_id;
+        externalId = nodeType === 'public_comment_reply'
+          ? (response as { id?: string }).id
+          : (response as { message_id?: string }).message_id;
       } catch (caught) {
         status = 'failed';
         error = caught instanceof Error ? caught : new Error('Meta send failed');

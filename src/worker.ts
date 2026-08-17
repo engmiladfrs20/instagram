@@ -448,9 +448,14 @@ function processIncomingWebhookEventLegacy(payload: any, eventId: string) {
 }
 
 async function processIncomingWebhookEvent(payload: any, eventId: string, env: Env): Promise<{ blocked: boolean }> {
-  const change = payload?.entry?.[0]?.changes?.[0];
+  // Instagram sends comments through entry.changes, but direct messages
+  // from the Instagram Messaging webhook arrive through entry.messaging.
+  // Normalize both shapes before extracting the message fields.
+  const entry = payload?.entry?.[0];
+  const change = entry?.changes?.[0];
+  const messagingEvent = entry?.messaging?.[0];
   const field = change?.field || 'messages';
-  const value = change?.value;
+  const value = change?.value || messagingEvent;
   if (!value) return { blocked: false };
 
   const messageValue = value.message || value.messages?.[0];

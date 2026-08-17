@@ -578,7 +578,7 @@ export default {
       const token = searchParams.get('hub.verify_token');
       const challenge = searchParams.get('hub.challenge');
 
-      const expectedToken = env.META_WEBHOOK_VERIFY_TOKEN || 'instaflow_secret_verify_token_2026';
+      const expectedToken = (env.META_WEBHOOK_VERIFY_TOKEN || 'instaflow_secret_verify_token_2026').trim();
 
       if (mode === 'subscribe' && token === expectedToken) {
         return new Response(challenge, {
@@ -593,7 +593,7 @@ export default {
     if (pathname === '/webhooks/meta' && method === 'POST') {
       const rawBody = await request.text();
       const signature = request.headers.get('x-hub-signature-256');
-      const appSecret = env.META_APP_SECRET || 'instaflow_app_secret_demo';
+      const appSecret = (env.META_APP_SECRET || 'instaflow_app_secret_demo').trim();
 
       let signatureValid = false;
       if (signature) {
@@ -1007,7 +1007,7 @@ export default {
         ],
       };
 
-      const appSecret = env.META_APP_SECRET || 'instaflow_app_secret_demo';
+      const appSecret = (env.META_APP_SECRET || 'instaflow_app_secret_demo').trim();
       const rawString = JSON.stringify(payload);
       const signature = await calculateHmacSha256(rawString, appSecret);
 

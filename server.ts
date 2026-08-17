@@ -171,7 +171,7 @@ app.get('/webhooks/meta', (req: Request, res: Response) => {
   const challenge = req.query['hub.challenge'];
 
   const EXPECTED_VERIFY_TOKEN =
-    process.env.META_WEBHOOK_VERIFY_TOKEN || 'instaflow_secret_verify_token_2026';
+    (process.env.META_WEBHOOK_VERIFY_TOKEN || 'instaflow_secret_verify_token_2026').trim();
 
   if (mode === 'subscribe' && token === EXPECTED_VERIFY_TOKEN) {
     console.log('[Meta Webhook] Successfully verified verify_token challenge');
@@ -186,7 +186,7 @@ app.get('/webhooks/meta', (req: Request, res: Response) => {
 app.post('/webhooks/meta', async (req: Request, res: Response) => {
   const signature = req.headers['x-hub-signature-256'] as string;
   const rawBody = (req as any).rawBody || Buffer.from(JSON.stringify(req.body));
-  const appSecret = process.env.META_APP_SECRET || 'instaflow_app_secret_demo';
+  const appSecret = (process.env.META_APP_SECRET || 'instaflow_app_secret_demo').trim();
 
   const expectedSig = calculateSignature(rawBody, appSecret);
   const signatureValid = Boolean(signature) && signature!.length === expectedSig.length && crypto.timingSafeEqual(
@@ -1060,7 +1060,7 @@ app.post('/api/v1/webhooks/simulate-legacy', (req, res) => {
     ],
   };
 
-  const appSecret = process.env.META_APP_SECRET || 'instaflow_app_secret_demo';
+  const appSecret = (process.env.META_APP_SECRET || 'instaflow_app_secret_demo').trim();
   const rawBodyBuffer = Buffer.from(JSON.stringify(payload));
   const signature = calculateSignature(rawBodyBuffer, appSecret);
 

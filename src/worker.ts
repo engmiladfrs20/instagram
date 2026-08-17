@@ -486,7 +486,8 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
     let status: Message['status'] = 'queued';
     let externalId: string | undefined;
     if (env.META_LIVE_MODE === 'true' && messageType !== 'public_comment_reply' && content.text) {
-      const url = `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/${encodeURIComponent(instagramAccount.metaIgUserId)}/messages?access_token=${encodeURIComponent(env.INSTAGRAM_ACCESS_TOKEN || '')}`;
+      const accessToken = env.INSTAGRAM_ACCESS_TOKEN?.trim() || '';
+      const url = `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/${encodeURIComponent(instagramAccount.metaIgUserId)}/messages?access_token=${encodeURIComponent(accessToken)}`;
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -684,8 +685,9 @@ export default {
     }
 
     if (pathname === '/api/v1/instagram/verify' && method === 'POST') {
-      if (!env.INSTAGRAM_ACCESS_TOKEN) return jsonResponse({ error: 'INSTAGRAM_ACCESS_TOKEN is not configured' }, 503);
-      const verifyUrl = `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/me?fields=id,username,account_type,user_id&access_token=${encodeURIComponent(env.INSTAGRAM_ACCESS_TOKEN)}`;
+      const accessToken = env.INSTAGRAM_ACCESS_TOKEN?.trim();
+      if (!accessToken) return jsonResponse({ error: 'INSTAGRAM_ACCESS_TOKEN is not configured' }, 503);
+      const verifyUrl = `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/me?fields=id,username,account_type,user_id&access_token=${encodeURIComponent(accessToken)}`;
       const response = await fetch(verifyUrl);
       const profile: any = await response.json().catch(() => ({}));
       if (!response.ok) {

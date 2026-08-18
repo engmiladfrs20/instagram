@@ -54,15 +54,26 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   const requestJson = async <T = any>(input: RequestInfo | URL, init?: RequestInit): Promise<T> => {
-    const response = await fetch(input, init);
-    const data: any = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const suffix = data.code ? ` (Meta code ${data.code})` : '';
-      const error = new Error(`${data.error || `Request failed (${response.status})`}${suffix}`) as Error & { responseData?: any };
-      error.responseData = data;
-      throw error;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 12000);
+    try {
+      const response = await fetch(input, { ...init, signal: init?.signal || controller.signal });
+      const data: any = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const suffix = data.code ? ` (Meta code ${data.code})` : '';
+        const error = new Error(`${data.error || `Request failed (${response.status})`}${suffix}`) as Error & { responseData?: any };
+        error.responseData = data;
+        throw error;
+      }
+      return data;
+    } catch (requestError) {
+      if (requestError instanceof DOMException && requestError.name === 'AbortError') {
+        throw new Error('پاسخ Worker در زمان مقرر دریافت نشد؛ اتصال شبکه یا نشست ورود را بررسی کنید.');
+      }
+      throw requestError;
+    } finally {
+      window.clearTimeout(timeout);
     }
-    return data;
   };
 
   // Fetch initial workspace data from backend
@@ -131,7 +142,7 @@ export default function App() {
 
   useEffect(() => {
     if (authUser) fetchData();
-  }, [authUser?.id]);
+  }, [authUser?.userId, authUser?.id]);
 
   const handleAuthenticated = (payload: any) => {
     setAuthUser(payload.user);

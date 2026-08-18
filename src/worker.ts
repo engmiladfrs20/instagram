@@ -558,6 +558,16 @@ function htmlResponse(html: string, status = 200): Response {
   });
 }
 
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 15000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const LEGAL_PAGE_STYLE = `
   body { font-family: Arial, sans-serif; line-height: 1.7; max-width: 860px; margin: 40px auto; padding: 0 20px; color: #172033; }
   h1 { color: #5b21b6; } h2 { margin-top: 28px; } a { color: #6d28d9; }
@@ -1264,7 +1274,7 @@ export default {
       if (providerError || !code) return htmlResponse(`<h1>Instagram connection was cancelled</h1><p>${providerError || 'No authorization code was returned.'}</p>`, 400);
       try {
         const redirectUri = instagramOAuthRedirectUri(env);
-        const shortTokenResponse = await fetch('https://api.instagram.com/oauth/access_token', {
+        const shortTokenResponse = await fetchWithTimeout('https://api.instagram.com/oauth/access_token', {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: new URLSearchParams({ client_id: env.META_APP_ID, client_secret: env.META_APP_SECRET, grant_type: 'authorization_code', redirect_uri: redirectUri, code }),
@@ -1272,11 +1282,11 @@ export default {
         const shortToken = await shortTokenResponse.json<any>().catch(() => ({}));
         if (!shortTokenResponse.ok || !shortToken.access_token) throw new Error(shortToken?.error_message || `Authorization code exchange failed (${shortTokenResponse.status})`);
         const longTokenUrl = `https://graph.instagram.com/access_token?grant_type=ig_exchange_token&client_secret=${encodeURIComponent(env.META_APP_SECRET)}&access_token=${encodeURIComponent(shortToken.access_token)}`;
-        const longTokenResponse = await fetch(longTokenUrl);
+        const longTokenResponse = await fetchWithTimeout(longTokenUrl);
         const longToken = await longTokenResponse.json<any>().catch(() => ({}));
         const accessToken = longToken.access_token || shortToken.access_token;
         if (!longTokenResponse.ok || !accessToken) throw new Error(longToken?.error?.message || `Long-lived token exchange failed (${longTokenResponse.status})`);
-        const profileResponse = await fetch(`https://graph.instagram.com/${instagramAccount.graphVersion}/me?fields=id,username,account_type,user_id&access_token=${encodeURIComponent(accessToken)}`);
+        const profileResponse = await fetchWithTimeout(`https://graph.instagram.com/${instagramAccount.graphVersion}/me?fields=id,username,account_type,user_id&access_token=${encodeURIComponent(accessToken)}`);
         const profile = await profileResponse.json<any>().catch(() => ({}));
         if (!profileResponse.ok || !profile.username) throw new Error(profile?.error?.message || `Instagram profile lookup failed (${profileResponse.status})`);
         const now = new Date().toISOString();
@@ -1297,7 +1307,7 @@ export default {
         instagramAccount.tokenExpiresAt = tokenExpiresAt;
         instagramAccount.lastTokenCheckAt = now;
         await persistWorkerState(env);
-        return htmlResponse('<h1>Instagram connected successfully</h1><p>You can close this window and return to InstaFlow.</p><p><a href="/">Open InstaFlow</a></p>', 200);
+        return htmlResponse('<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="1;url=/"><title>Instagram connected</title></head><body><h1>Instagram connected successfully</h1><p>Returning to InstaFlow…</p><p><a href="/">Open InstaFlow</a></p></body></html>', 200);
       } catch (error) {
         console.log(JSON.stringify({ event: 'instagram_oauth_failed', workspaceId: stateRow.workspaceId, error: error instanceof Error ? error.message : String(error) }));
         return htmlResponse('<h1>Instagram connection failed</h1><p>Meta did not complete the connection. Return to InstaFlow and try again.</p>', 502);

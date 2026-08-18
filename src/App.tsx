@@ -340,7 +340,7 @@ export default function App() {
     return <AuthView requestJson={requestJson} onAuthenticated={handleAuthenticated} />;
   }
 
-  if (error && (!workspace || !instagramAccount || !analytics)) {
+  if (error && (!workspace || !analytics)) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center font-sans">
         <div className="text-center space-y-4 max-w-sm px-6">
@@ -351,7 +351,7 @@ export default function App() {
     );
   }
 
-  if (loading || !workspace || !instagramAccount || !analytics) {
+  if (loading || !workspace || !analytics) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center font-sans">
         <div className="text-center space-y-3">

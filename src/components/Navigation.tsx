@@ -20,7 +20,7 @@ interface NavigationProps {
   currentTab: string;
   setCurrentTab: (tab: string) => void;
   workspace: Workspace;
-  instagramAccount: InstagramAccount;
+  instagramAccount: InstagramAccount | null;
   unreadCount: number;
   activeAutomationCount: number;
   onLogout: () => Promise<void>;
@@ -30,11 +30,29 @@ export const Navigation: React.FC<NavigationProps> = ({
   currentTab,
   setCurrentTab,
   workspace,
-  instagramAccount,
+  instagramAccount: instagramAccountInput,
   unreadCount,
   activeAutomationCount,
   onLogout,
 }) => {
+  const instagramAccount = instagramAccountInput ?? ({
+    id: 'not-connected',
+    workspaceId: workspace.id,
+    metaIgUserId: '',
+    username: 'not-connected',
+    displayName: 'Instagram متصل نیست',
+    accountType: 'BUSINESS',
+    authMode: 'instagram_login',
+    graphHost: 'graph.instagram.com',
+    graphVersion: 'v20.0',
+    grantedScopes: [],
+    status: 'disconnected',
+    webhookStatus: 'pending',
+    tokenExpiresAt: '',
+    lastWebhookAt: '',
+    lastTokenCheckAt: '',
+    createdAt: new Date().toISOString(),
+  } as InstagramAccount);
   const navItems = [
     { id: 'ai', label: 'دستیار هوشمند Gemini', icon: BrainCircuit },
     { id: 'dashboard', label: 'داشبورد', icon: LayoutDashboard },
@@ -73,6 +91,8 @@ export const Navigation: React.FC<NavigationProps> = ({
           {/* Account Status Pill */}
           <div className="flex items-center space-x-4 space-x-reverse">
             <div className="hidden md:flex items-center space-x-3 space-x-reverse bg-slate-800/80 px-3.5 py-1.5 rounded-lg border border-slate-700/60">
+              {instagramAccountInput ? (
+                <>
               {instagramAccount.profilePicUrl && (
                 <img
                   src={instagramAccount.profilePicUrl}
@@ -92,6 +112,13 @@ export const Navigation: React.FC<NavigationProps> = ({
                   Business Login | Webhook فعال
                 </p>
               </div>
+                </>
+              ) : (
+                <div className="text-right">
+                  <p className="text-xs font-semibold text-amber-300">Instagram متصل نیست</p>
+                  <p className="text-[10px] text-slate-400">برای شروع، اتصال رسمی Meta را انجام دهید</p>
+                </div>
+              )}
             </div>
 
             <button

@@ -14,16 +14,34 @@ import {
 import { InstagramAccount } from '../types';
 
 interface InstagramAccountsViewProps {
-  instagramAccount: InstagramAccount;
+  instagramAccount: InstagramAccount | null;
   onReauthorize: () => Promise<void>;
   onStartOAuth: () => Promise<string>;
 }
 
 export const InstagramAccountsView: React.FC<InstagramAccountsViewProps> = ({
-  instagramAccount,
+  instagramAccount: instagramAccountInput,
   onReauthorize,
   onStartOAuth,
 }) => {
+  const instagramAccount = instagramAccountInput ?? ({
+    id: 'not-connected',
+    workspaceId: '',
+    metaIgUserId: '',
+    username: 'not-connected',
+    displayName: 'Instagram متصل نیست',
+    accountType: 'BUSINESS',
+    authMode: 'instagram_login',
+    graphHost: 'graph.instagram.com',
+    graphVersion: 'v20.0',
+    grantedScopes: [],
+    status: 'disconnected',
+    webhookStatus: 'pending',
+    tokenExpiresAt: '1970-01-01T00:00:00.000Z',
+    lastWebhookAt: '1970-01-01T00:00:00.000Z',
+    lastTokenCheckAt: '1970-01-01T00:00:00.000Z',
+    createdAt: '1970-01-01T00:00:00.000Z',
+  } as InstagramAccount);
   const [showOAuthModal, setShowOAuthModal] = useState<boolean>(false);
   const [oauthStep, setOauthStep] = useState<number>(1);
   const [checking, setChecking] = useState<boolean>(false);

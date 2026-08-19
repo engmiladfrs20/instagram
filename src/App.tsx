@@ -54,12 +54,14 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   const requestJson = async <T = any>(input: RequestInfo | URL, init?: RequestInit): Promise<T> => {
-    const controller = new AbortController();
-    const timeout = window.setTimeout(() => controller.abort(), 12000);
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 12000);
     try {
       const response = await fetch(input, { ...init, signal: init?.signal || controller.signal });
+      const contentType = response.headers.get('content-type') || '';
       const data: any = await response.json().catch(() => ({}));
-      if (!response.ok) {
+      const isApiRequest = String(input).includes('/api/');
+      if (!response.ok || (isApiRequest && !contentType.includes('application/json'))) {
         const suffix = data.code ? ` (Meta code ${data.code})` : '';
         const error = new Error(`${data.error || `Request failed (${response.status})`}${suffix}`) as Error & { responseData?: any };
         error.responseData = data;
@@ -378,8 +380,7 @@ export default function App() {
   const unreadCount = conversations.reduce((acc, c) => acc + (c.unreadCount || 0), 0);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-purple-500 selection:text-white dir-rtl">
-      {/* Top Header & Navigation Bar */}
+    <div className="app-shell min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-purple-500 selection:text-white dir-rtl">
       <Navigation
         currentTab={currentTab}
         setCurrentTab={setCurrentTab}
@@ -390,17 +391,17 @@ export default function App() {
         onLogout={handleLogout}
       />
 
-      {/* Main Body View Container */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {error && <div className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-xs text-rose-200">{error}</div>}
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={currentTab}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            transition={{ duration: 0.18 }}
-          >
+      <div className="app-main">
+        <main className="app-content">
+          {error && <div className="app-error-alert mb-4">{error}</div>}
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={currentTab}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.18 }}
+            >
             {currentTab === 'dashboard' && (
               <DashboardView
                 analytics={analytics}
@@ -472,9 +473,10 @@ export default function App() {
             {currentTab === 'settings' && (
               <SettingsView workspace={workspace} members={members} onCleanup={handleCleanupTestData} />
             )}
-          </motion.div>
-        </AnimatePresence>
-      </main>
+            </motion.div>
+          </AnimatePresence>
+        </main>
+      </div>
     </div>
   );
 }

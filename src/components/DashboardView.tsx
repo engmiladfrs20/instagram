@@ -65,8 +65,12 @@ const eventStatus = (status: WebhookEvent['status']) => {
   return { label: 'دریافت شد', tone: 'info' };
 };
 
-const shortDate = (date: string) =>
-  new Date(date).toLocaleDateString('fa-IR', { month: 'short', day: 'numeric' });
+const shortDate = (date: string) => {
+  const parsedDate = new Date(date);
+  return Number.isNaN(parsedDate.getTime())
+    ? date
+    : parsedDate.toLocaleDateString('fa-IR', { month: 'short', day: 'numeric' });
+};
 
 const chartTooltipStyle = {
   background: 'var(--dashboard-popover-bg)',

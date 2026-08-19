@@ -1,17 +1,36 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
-  Workflow,
-  MessageSquare,
-  Users,
-  ShieldCheck,
-  TrendingUp,
+  Activity,
+  ArrowUpLeft,
   ArrowUpRight,
-  Send,
-  Sparkles,
+  CheckCircle2,
+  Clock3,
   FlaskConical,
-  Clock,
-  CheckCircle,
+  Gauge,
+  MessageCircle,
+  MessageSquareText,
+  Rocket,
+  Send,
+  ShieldCheck,
+  Sparkles,
+  Users,
+  Workflow,
+  XCircle,
 } from 'lucide-react';
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
 import { AnalyticsOverview, WebhookEvent } from '../types';
 
 interface DashboardViewProps {
@@ -20,259 +39,393 @@ interface DashboardViewProps {
   onNavigate: (tab: string) => void;
 }
 
+const numberFormatter = new Intl.NumberFormat('fa-IR');
+const percentFormatter = new Intl.NumberFormat('fa-IR', {
+  maximumFractionDigits: 1,
+});
+
+const formatNumber = (value: number) => numberFormatter.format(Math.max(0, value || 0));
+const formatPercent = (value: number) => `${percentFormatter.format(Math.max(0, value || 0))}%`;
+
+const eventLabel = (eventType: string) => {
+  if (eventType === 'comments') return 'کامنت جدید';
+  if (eventType === 'messages') return 'پیام دایرکت';
+  return eventType || 'رویداد وب‌هوک';
+};
+
+const eventText = (event: WebhookEvent) => {
+  const value = event.payload?.entry?.[0]?.changes?.[0]?.value;
+  return value?.text || value?.message?.text || 'رویداد از API رسمی Meta دریافت شد';
+};
+
+const eventStatus = (status: WebhookEvent['status']) => {
+  if (status === 'processed') return { label: 'پردازش شد', tone: 'success' };
+  if (status === 'failed') return { label: 'ناموفق', tone: 'danger' };
+  if (status === 'deduped') return { label: 'تکراری', tone: 'warning' };
+  return { label: 'دریافت شد', tone: 'info' };
+};
+
+const shortDate = (date: string) =>
+  new Date(date).toLocaleDateString('fa-IR', { month: 'short', day: 'numeric' });
+
+const chartTooltipStyle = {
+  background: 'var(--dashboard-popover-bg)',
+  border: '1px solid var(--bs-border-color)',
+  borderRadius: '14px',
+  color: 'var(--bs-body-color)',
+  boxShadow: '0 16px 40px rgba(2, 6, 23, 0.22)',
+};
+
 export const DashboardView: React.FC<DashboardViewProps> = ({
   analytics,
   recentWebhooks,
   onNavigate,
 }) => {
+  const performanceData = useMemo(
+    () =>
+      analytics.dailyStats.map((stat) => ({
+        date: shortDate(stat.date),
+        inbound: stat.inbound,
+        replies: stat.privateReplies + stat.publicReplies,
+        leads: stat.leads,
+      })),
+    [analytics.dailyStats],
+  );
+
+  const deliveryData = useMemo(
+    () =>
+      performanceData.map((stat) => ({
+        date: stat.date,
+        دریافت: stat.inbound,
+        پردازش: Math.max(0, stat.inbound - Math.round(stat.inbound * (analytics.policyBlockRate / 100))),
+        پاسخ: stat.replies,
+      })),
+    [analytics.policyBlockRate, performanceData],
+  );
+
+  const distributionData = useMemo(
+    () => [
+      { name: 'کامنت‌ها', value: analytics.totalCommentsReceived, color: 'var(--color-purple-500)' },
+      { name: 'پاسخ خصوصی', value: analytics.privateRepliesSent, color: 'var(--color-indigo-500)' },
+      { name: 'سرنخ‌ها', value: analytics.leadsCaptured, color: 'var(--color-emerald-500)' },
+    ].filter((item) => item.value > 0),
+    [analytics.leadsCaptured, analytics.privateRepliesSent, analytics.totalCommentsReceived],
+  );
+
+  const healthTone = analytics.webhookDeliveryRate >= 95 ? 'success' : analytics.webhookDeliveryRate >= 80 ? 'warning' : 'danger';
+  const recentEvents = recentWebhooks.slice(0, 5);
+
   return (
-    <div className="space-y-6">
-      {/* Welcome & Quick Actions Hero */}
-      <div className="bg-gradient-to-r from-slate-900 via-purple-950/40 to-slate-900 border border-slate-800 rounded-2xl p-6 relative overflow-hidden shadow-xl">
-        <div className="absolute -top-12 -left-12 w-48 h-48 bg-purple-500/10 rounded-full blur-3xl pointer-events-none" />
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
-          <div>
-            <div className="flex items-center space-x-2 space-x-reverse mb-1">
-              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse ml-1.5" />
-                سامانه فعال | Webhook Delivery Rate: 99.8%
-              </span>
-            </div>
-            <h1 className="text-2xl font-bold text-white tracking-tight">
-              مدیریت هوشمند اتوماسیون اینستاگرام
-            </h1>
-            <p className="text-sm text-slate-400 mt-1 max-w-2xl">
-              پاسخ‌دهی خودکار به کامنت‌ها، ارسال دایرکت‌های هوشمند Comment-to-DM، ثبت فاکتور و مدیریت لیدها کاملاً مطابق قوانین رسمی Meta.
-            </p>
-          </div>
-
-          <div className="flex items-center space-x-3 space-x-reverse">
-            <button
-              onClick={() => onNavigate('webhook_studio')}
-              className="flex items-center space-x-2 space-x-reverse px-4 py-2.5 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 font-medium text-xs transition shadow-sm"
-            >
-              <FlaskConical className="w-4 h-4" />
-              <span>استودیو تست وب‌هوک</span>
-            </button>
-            <button
-              onClick={() => onNavigate('automations')}
-              className="flex items-center space-x-2 space-x-reverse px-4 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-medium text-xs transition shadow-md shadow-purple-900/30"
-            >
-              <Workflow className="w-4 h-4" />
-              <span>ساخت اتوماسیون جدید</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Primary Metrics Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-5 hover:border-slate-700 transition">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-400 font-medium">کامنت‌های دریافتی</span>
-            <div className="p-2 bg-purple-500/10 rounded-xl text-purple-400">
-              <MessageSquare className="w-5 h-5" />
-            </div>
-          </div>
-          <div className="mt-3">
-            <span className="text-2xl font-bold text-white dir-ltr inline-block">
-              {analytics.totalCommentsReceived.toLocaleString('fa-IR')}
-            </span>
-            <div className="flex items-center space-x-1 space-x-reverse text-xs text-emerald-400 mt-1">
-              <TrendingUp className="w-3.5 h-3.5" />
-              <span>۱۴٪+ رشد نسبت به هفته قبل</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-5 hover:border-slate-700 transition">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-400 font-medium">پاسخ‌های دایرکت (Private Replies)</span>
-            <div className="p-2 bg-indigo-500/10 rounded-xl text-indigo-400">
-              <Send className="w-5 h-5" />
-            </div>
-          </div>
-          <div className="mt-3">
-            <span className="text-2xl font-bold text-white dir-ltr inline-block">
-              {analytics.privateRepliesSent.toLocaleString('fa-IR')}
-            </span>
-            <p className="text-xs text-slate-400 mt-1">
-              رعایت ضوابط ۷ روزه قوانین Meta
-            </p>
-          </div>
-        </div>
-
-        <div className="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-5 hover:border-slate-700 transition">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-400 font-medium">لیدها و سفارشات جذب‌شده</span>
-            <div className="p-2 bg-emerald-500/10 rounded-xl text-emerald-400">
-              <Users className="w-5 h-5" />
-            </div>
-          </div>
-          <div className="mt-3">
-            <span className="text-2xl font-bold text-white dir-ltr inline-block">
-              {analytics.leadsCaptured.toLocaleString('fa-IR')}
-            </span>
-            <div className="flex items-center space-x-1 space-x-reverse text-xs text-emerald-400 mt-1">
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>نرخ تبدیل ۱۶.۴٪</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-5 hover:border-slate-700 transition">
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-400 font-medium">سلامت سلامت وب‌هوک و API</span>
-            <div className="p-2 bg-emerald-500/10 rounded-xl text-emerald-400">
-              <ShieldCheck className="w-5 h-5" />
-            </div>
-          </div>
-          <div className="mt-3">
-            <span className="text-2xl font-bold text-white dir-ltr inline-block">
-              ۹۹.۸٪
-            </span>
-            <p className="text-xs text-slate-400 mt-1">
-              Deduplicated & Signature Valid
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-3 text-xs text-slate-300">
-        Webhook delivery: <span className="font-bold text-emerald-300">{analytics.webhookDeliveryRate.toFixed(1)}%</span>
-        {' '}• Policy block rate: <span className="font-bold text-amber-300">{analytics.policyBlockRate.toFixed(1)}%</span>
-      </div>
-
-      {/* Conversion Funnel & Daily Chart */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Funnel Breakdown */}
-        <div className="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-6 lg:col-span-1">
-          <h3 className="text-sm font-bold text-white mb-4 flex items-center justify-between">
-            <span>قیف تبدیل کامنت به سفارش</span>
-            <span className="text-xs text-purple-400 font-normal">امروز</span>
-          </h3>
-
-          <div className="space-y-4">
-            <div className="space-y-1.5">
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-300">کامنت‌های دریافت شده</span>
-                <span className="text-slate-400 font-semibold dir-ltr">{analytics.totalCommentsReceived.toLocaleString('fa-IR')}</span>
+    <main className="dashboard-shell container-fluid px-0">
+      <section className="dashboard-hero card border-0 overflow-hidden mb-4">
+        <div className="dashboard-hero-glow dashboard-hero-glow-one" />
+        <div className="dashboard-hero-glow dashboard-hero-glow-two" />
+        <div className="card-body p-4 p-xl-5 position-relative">
+          <div className="d-flex flex-column flex-xl-row align-items-xl-center justify-content-between gap-4">
+            <div>
+              <div className="d-flex flex-wrap align-items-center gap-2 mb-3">
+                <span className={`badge rounded-pill text-bg-${healthTone} dashboard-status-badge`}>
+                  <span className="dashboard-live-dot" />
+                  سیستم فعال
+                </span>
+                <span className="dashboard-kicker">مرکز کنترل Instaflow</span>
               </div>
-              <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden">
-                <div className="h-full bg-purple-500 rounded-full w-full" />
-              </div>
+              <h1 className="display-6 fw-bold mb-2">داشبورد هوشمند اتوماسیون اینستاگرام</h1>
+              <p className="dashboard-hero-copy mb-0">
+                عملکرد پیام‌ها، کامنت‌ها، پاسخ‌های خودکار و سرنخ‌های فروش را در یک نمای زنده دنبال کنید.
+              </p>
             </div>
-
-            <div className="space-y-1.5 pr-3 border-r-2 border-purple-500/30">
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-300">ارسال پاسخ خصوصی (Private Reply)</span>
-                <span className="text-slate-400 font-semibold dir-ltr">{analytics.privateRepliesSent.toLocaleString('fa-IR')} ({analytics.totalCommentsReceived ? ((analytics.privateRepliesSent / analytics.totalCommentsReceived) * 100).toFixed(1) : '0.0'}%)</span>
-              </div>
-              <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden">
-                <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${analytics.totalCommentsReceived ? (analytics.privateRepliesSent / analytics.totalCommentsReceived) * 100 : 0}%` }} />
-              </div>
-            </div>
-
-            <div className="space-y-1.5 pr-6 border-r-2 border-indigo-500/30">
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-300">پاسخ کاربر و بازگشایی پنجره ۲۴ ساعته</span>
-                <span className="text-slate-400 font-semibold dir-ltr">{analytics.totalInboundMessages.toLocaleString('fa-IR')} ({analytics.totalCommentsReceived ? ((analytics.totalInboundMessages / analytics.totalCommentsReceived) * 100).toFixed(1) : '0.0'}%)</span>
-              </div>
-              <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden">
-                <div className="h-full bg-teal-500 rounded-full" style={{ width: `${Math.min(100, analytics.totalCommentsReceived ? (analytics.totalInboundMessages / analytics.totalCommentsReceived) * 100 : 0)}%` }} />
-              </div>
-            </div>
-
-            <div className="space-y-1.5 pr-9 border-r-2 border-teal-500/30">
-              <div className="flex justify-between text-xs">
-                <span className="text-slate-300">تکمیل فرم / ثبت نهایی سفارش</span>
-                <span className="text-slate-400 font-semibold dir-ltr">{analytics.leadsCaptured.toLocaleString('fa-IR')} ({analytics.conversionRate.toFixed(1)}%)</span>
-              </div>
-              <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden">
-                <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${Math.min(100, analytics.conversionRate)}%` }} />
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-6 pt-4 border-t border-slate-800/80 text-xs text-slate-400 flex items-center justify-between">
-            <span>بازده کلی کمپین‌ها</span>
-            <span className="text-emerald-400 font-semibold">+۲۴٪ افزایش نسبت به ماه گذشته</span>
-          </div>
-        </div>
-
-        {/* Live Webhooks Stream Monitor */}
-        <div className="bg-slate-900/80 border border-slate-800/80 rounded-2xl p-6 lg:col-span-2 flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h3 className="text-sm font-bold text-white flex items-center space-x-2 space-x-reverse">
-                  <span>جریان زنده رویدادهای Webhook</span>
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-                </h3>
-                <p className="text-xs text-slate-400">آخرین رویدادهای اینستاگرام دریافتی با امضای HMAC</p>
-              </div>
-              <button
-                onClick={() => onNavigate('webhook_studio')}
-                className="text-xs text-purple-400 hover:text-purple-300 font-medium flex items-center space-x-1 space-x-reverse"
-              >
-                <span>مشاهده در استودیو</span>
-                <ArrowUpRight className="w-3.5 h-3.5" />
+            <div className="d-flex flex-wrap gap-2">
+              <button className="btn btn-outline-warning dashboard-action-btn" onClick={() => onNavigate('webhook_studio')}>
+                <FlaskConical size={17} />
+                تست وب‌هوک
+              </button>
+              <button className="btn btn-primary dashboard-action-btn" onClick={() => onNavigate('automations')}>
+                <Workflow size={17} />
+                ساخت اتوماسیون
+                <ArrowUpLeft size={15} />
               </button>
             </div>
+          </div>
 
-            <div className="space-y-2.5">
-              {recentWebhooks.slice(0, 4).map((evt) => (
-                <div
-                  key={evt.id}
-                  className="bg-slate-950/60 border border-slate-800/60 rounded-xl p-3 flex items-center justify-between text-xs"
-                >
-                  <div className="flex items-center space-x-3 space-x-reverse">
-                    <div className="p-1.5 bg-purple-500/10 rounded-lg text-purple-400">
-                      <Clock className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <div className="flex items-center space-x-2 space-x-reverse">
-                        <span className="font-semibold text-slate-200">
-                          رویداد {evt.eventType === 'comments' ? 'کامنت جدید' : 'پیام دایرکت'}
-                        </span>
-                        <span className="px-1.5 py-0.2 rounded bg-slate-800 text-slate-400 font-mono text-[10px]">
-                          {evt.fingerprint.slice(0, 10)}...
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-400 mt-0.5">
-                        {evt.payload?.entry?.[0]?.changes?.[0]?.value?.text || 'دریافت شده از API رسمی Meta'}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="text-left">
-                    <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${
-                        evt.status === 'processed'
-                          ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                          : 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                      }`}
-                    >
-                      <CheckCircle className="w-3 h-3 ml-1" />
-                      {evt.status === 'processed' ? 'پردازش شد' : 'یکتا‌سازی (Deduplicated)'}
-                    </span>
-                    <p className="text-[10px] text-slate-400 mt-1 dir-ltr font-mono">
-                      {new Date(evt.receivedAt).toLocaleTimeString('fa-IR')}
-                    </p>
-                  </div>
-                </div>
-              ))}
+          <div className="row g-3 mt-4">
+            <div className="col-12 col-md-4">
+              <div className="hero-stat">
+                <span>نرخ تحویل وب‌هوک</span>
+                <strong>{formatPercent(analytics.webhookDeliveryRate)}</strong>
+                <small>پایداری دریافت رویدادها</small>
+              </div>
+            </div>
+            <div className="col-12 col-md-4">
+              <div className="hero-stat">
+                <span>اتوماسیون‌های فعال</span>
+                <strong>{formatNumber(analytics.activeAutomations)}</strong>
+                <small>از {formatNumber(analytics.totalAutomations)} اتوماسیون</small>
+              </div>
+            </div>
+            <div className="col-12 col-md-4">
+              <div className="hero-stat">
+                <span>نرخ تبدیل سرنخ</span>
+                <strong>{formatPercent(analytics.conversionRate)}</strong>
+                <small>بر اساس داده‌های ثبت‌شده</small>
+              </div>
             </div>
           </div>
+        </div>
+      </section>
 
-          <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
-            <span>تست وب‌هوک با امضای واقعی HMAC SHA-256</span>
-            <span className="text-purple-400 hover:underline cursor-pointer" onClick={() => onNavigate('webhook_studio')}>
-              اجرای سناریوی شبیه‌سازی →
-            </span>
+      <section className="row g-3 g-xl-4 mb-4" aria-label="شاخص‌های کلیدی">
+        <MetricCard title="کامنت‌های دریافتی" value={analytics.totalCommentsReceived} helper="تعاملات ثبت‌شده" icon={<MessageSquareText size={20} />} tone="purple" />
+        <MetricCard title="پیام‌های ورودی" value={analytics.totalInboundMessages} helper="دایرکت‌های دریافت‌شده" icon={<MessageCircle size={20} />} tone="cyan" />
+        <MetricCard title="پاسخ‌های خصوصی" value={analytics.privateRepliesSent} helper="ارسال‌شده از طریق سناریوها" icon={<Send size={20} />} tone="indigo" />
+        <MetricCard title="سرنخ‌های جذب‌شده" value={analytics.leadsCaptured} helper="کاربر باکیفیت برای پیگیری" icon={<Users size={20} />} tone="emerald" />
+      </section>
+
+      <section className="row g-3 g-xl-4 mb-4">
+        <div className="col-12 col-xl-8">
+          <div className="dashboard-card card h-100">
+            <div className="card-body p-4">
+              <ChartHeader
+                icon={<Activity size={18} />}
+                eyebrow="روند عملکرد"
+                title="تعاملات و پاسخ‌های خودکار"
+                helper="نمای روزانه بر اساس آمار ثبت‌شده در سیستم"
+              />
+              <div className="chart-shell chart-shell-lg">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={performanceData} margin={{ top: 16, right: 8, left: -20, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="inboundGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="var(--color-purple-500)" stopOpacity={0.42} />
+                        <stop offset="95%" stopColor="var(--color-purple-500)" stopOpacity={0.02} />
+                      </linearGradient>
+                      <linearGradient id="replyGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="var(--color-emerald-500)" stopOpacity={0.32} />
+                        <stop offset="95%" stopColor="var(--color-emerald-500)" stopOpacity={0.02} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke="var(--dashboard-grid)" strokeDasharray="4 4" vertical={false} />
+                    <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: 'var(--dashboard-muted)', fontSize: 11 }} />
+                    <YAxis axisLine={false} tickLine={false} tick={{ fill: 'var(--dashboard-muted)', fontSize: 11 }} allowDecimals={false} />
+                    <Tooltip contentStyle={chartTooltipStyle} cursor={{ stroke: 'var(--dashboard-grid)' }} />
+                    <Area type="monotone" dataKey="inbound" name="ورودی" stroke="var(--color-purple-500)" fill="url(#inboundGradient)" strokeWidth={3} />
+                    <Area type="monotone" dataKey="replies" name="پاسخ‌ها" stroke="var(--color-emerald-500)" fill="url(#replyGradient)" strokeWidth={2.5} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="chart-legend mt-2">
+                <span><i className="legend-dot legend-dot-primary" /> ورودی‌ها</span>
+                <span><i className="legend-dot legend-dot-success" /> پاسخ‌های خودکار</span>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
-    </div>
+
+        <div className="col-12 col-xl-4">
+          <div className="dashboard-card card h-100">
+            <div className="card-body p-4">
+              <ChartHeader
+                icon={<Gauge size={18} />}
+                eyebrow="سلامت سیستم"
+                title="وضعیت ارسال و سیاست‌ها"
+                helper="شاخص‌های عملیاتی امروز"
+              />
+              <div className="health-score my-4">
+                <div className="health-score-ring" style={{ '--score': `${Math.min(100, analytics.webhookDeliveryRate)}%` } as React.CSSProperties}>
+                  <div>
+                    <strong>{formatPercent(analytics.webhookDeliveryRate)}</strong>
+                    <span>تحویل موفق</span>
+                  </div>
+                </div>
+              </div>
+              <div className="d-flex flex-column gap-3">
+                <HealthRow label="تحویل وب‌هوک" value={analytics.webhookDeliveryRate} tone="success" />
+                <HealthRow label="مسدودسازی سیاستی" value={analytics.policyBlockRate} tone="warning" inverse />
+                <HealthRow label="نرخ تبدیل" value={analytics.conversionRate} tone="primary" />
+              </div>
+              <button className="btn btn-sm btn-outline-secondary w-100 mt-4" onClick={() => onNavigate('analytics')}>
+                مشاهده گزارش کامل
+                <ArrowUpRight size={15} className="me-1" />
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="row g-3 g-xl-4 mb-4">
+        <div className="col-12 col-xl-8">
+          <div className="dashboard-card card h-100">
+            <div className="card-body p-4">
+              <ChartHeader
+                icon={<Rocket size={18} />}
+                eyebrow="عملکرد روزانه"
+                title="دریافت تا پاسخ"
+                helper="مقایسه حجم رویدادها و خروجی اتوماسیون"
+              />
+              <div className="chart-shell chart-shell-md">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={deliveryData} barGap={6} margin={{ top: 16, right: 8, left: -20, bottom: 0 }}>
+                    <CartesianGrid stroke="var(--dashboard-grid)" strokeDasharray="4 4" vertical={false} />
+                    <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: 'var(--dashboard-muted)', fontSize: 11 }} />
+                    <YAxis axisLine={false} tickLine={false} tick={{ fill: 'var(--dashboard-muted)', fontSize: 11 }} allowDecimals={false} />
+                    <Tooltip contentStyle={chartTooltipStyle} cursor={{ fill: 'var(--dashboard-hover)' }} />
+                    <Bar dataKey="دریافت" name="دریافت" fill="var(--color-purple-500)" radius={[6, 6, 0, 0]} />
+                    <Bar dataKey="پردازش" name="پردازش" fill="var(--color-cyan-500)" radius={[6, 6, 0, 0]} />
+                    <Bar dataKey="پاسخ" name="پاسخ" fill="var(--color-emerald-500)" radius={[6, 6, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="col-12 col-xl-4">
+          <div className="dashboard-card card h-100">
+            <div className="card-body p-4">
+              <ChartHeader
+                icon={<Sparkles size={18} />}
+                eyebrow="قیف تعامل"
+                title="ترکیب خروجی‌ها"
+                helper="نسبت رویدادهای مهم کسب‌وکار"
+              />
+              <div className="chart-shell chart-shell-pie">
+                {distributionData.length ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie data={distributionData} dataKey="value" nameKey="name" innerRadius={62} outerRadius={88} paddingAngle={4} stroke="none">
+                        {distributionData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+                      </Pie>
+                      <Tooltip contentStyle={chartTooltipStyle} formatter={(value: number) => formatNumber(value)} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="empty-state">هنوز داده‌ای برای نمایش ثبت نشده است.</div>
+                )}
+              </div>
+              <div className="d-flex flex-column gap-2">
+                {distributionData.map((item) => (
+                  <div className="d-flex align-items-center justify-content-between small" key={item.name}>
+                    <span className="text-body-secondary"><i className="legend-dot ms-2" style={{ background: item.color }} />{item.name}</span>
+                    <strong>{formatNumber(item.value)}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="row g-3 g-xl-4">
+        <div className="col-12 col-xl-8">
+          <div className="dashboard-card card">
+            <div className="card-body p-4">
+              <div className="d-flex align-items-start justify-content-between gap-3 mb-3">
+                <ChartHeader icon={<Clock3 size={18} />} eyebrow="مانیتور زنده" title="آخرین رویدادهای وب‌هوک" helper="آخرین رویدادهای دریافت‌شده از Meta" />
+                <button className="btn btn-sm btn-link text-decoration-none dashboard-link" onClick={() => onNavigate('webhook_studio')}>مشاهده همه <ArrowUpRight size={14} /></button>
+              </div>
+              <div className="event-list">
+                {recentEvents.length ? recentEvents.map((event) => {
+                  const status = eventStatus(event.status);
+                  return (
+                    <div className="event-row" key={event.id}>
+                      <div className="event-icon"><Activity size={17} /></div>
+                      <div className="flex-grow-1 min-w-0">
+                        <div className="d-flex flex-wrap align-items-center gap-2">
+                          <strong>{eventLabel(event.eventType)}</strong>
+                          <span className="event-fingerprint">{event.fingerprint.slice(0, 10)}…</span>
+                        </div>
+                        <p className="small text-body-secondary text-truncate mb-0 mt-1">{eventText(event)}</p>
+                      </div>
+                      <div className="text-start flex-shrink-0">
+                        <span className={`badge text-bg-${status.tone}`}>{status.tone === 'success' ? <CheckCircle2 size={12} className="ms-1" /> : status.tone === 'danger' ? <XCircle size={12} className="ms-1" /> : null}{status.label}</span>
+                        <div className="event-time">{new Date(event.receivedAt).toLocaleTimeString('fa-IR')}</div>
+                      </div>
+                    </div>
+                  );
+                }) : <div className="empty-state py-4">رویداد جدیدی دریافت نشده است.</div>}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="col-12 col-xl-4">
+          <div className="dashboard-card card h-100">
+            <div className="card-body p-4 d-flex flex-column">
+              <ChartHeader icon={<ShieldCheck size={18} />} eyebrow="کنترل کیفیت" title="امنیت و انطباق" helper="پیش‌نیازهای پاسخ‌گویی ایمن" />
+              <div className="compliance-list mt-4">
+                <div><span><ShieldCheck size={16} /> امضای HMAC</span><strong className="text-success">فعال</strong></div>
+                <div><span><CheckCircle2 size={16} /> جلوگیری از تکرار</span><strong className="text-success">فعال</strong></div>
+                <div><span><Workflow size={16} /> سناریوهای خودکار</span><strong>{formatNumber(analytics.activeAutomations)}</strong></div>
+              </div>
+              <div className="mt-auto pt-4">
+                <button className="btn btn-primary w-100" onClick={() => onNavigate('automations')}>
+                  مدیریت سناریوها
+                  <ArrowUpLeft size={16} />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
   );
 };
+
+interface MetricCardProps {
+  title: string;
+  value: number;
+  helper: string;
+  icon: React.ReactNode;
+  tone: string;
+}
+
+const MetricCard: React.FC<MetricCardProps> = ({ title, value, helper, icon, tone }) => (
+  <div className="col-12 col-sm-6 col-xl-3">
+    <div className={`metric-card metric-card-${tone} card h-100`}>
+      <div className="card-body p-4">
+        <div className="d-flex align-items-center justify-content-between gap-3">
+          <span className="metric-label">{title}</span>
+          <span className="metric-icon">{icon}</span>
+        </div>
+        <strong className="metric-value d-block mt-3">{formatNumber(value)}</strong>
+        <span className="metric-helper">{helper}</span>
+      </div>
+    </div>
+  </div>
+);
+
+interface ChartHeaderProps {
+  icon: React.ReactNode;
+  eyebrow: string;
+  title: string;
+  helper: string;
+}
+
+const ChartHeader: React.FC<ChartHeaderProps> = ({ icon, eyebrow, title, helper }) => (
+  <div className="chart-header">
+    <div className="chart-header-icon">{icon}</div>
+    <div>
+      <span className="chart-eyebrow">{eyebrow}</span>
+      <h2 className="h5 mb-1 mt-1">{title}</h2>
+      <p className="small text-body-secondary mb-0">{helper}</p>
+    </div>
+  </div>
+);
+
+interface HealthRowProps {
+  label: string;
+  value: number;
+  tone: string;
+  inverse?: boolean;
+}
+
+const HealthRow: React.FC<HealthRowProps> = ({ label, value, tone, inverse }) => (
+  <div>
+    <div className="d-flex align-items-center justify-content-between small mb-2">
+      <span className="text-body-secondary">{label}</span>
+      <strong className={inverse ? 'text-warning' : `text-${tone}`}>{formatPercent(value)}</strong>
+    </div>
+    <div className="progress dashboard-progress" role="progressbar" aria-valuenow={value} aria-valuemin={0} aria-valuemax={100}>
+      <div className={`progress-bar bg-${tone}`} style={{ width: `${Math.min(100, Math.max(0, value))}%` }} />
+    </div>
+  </div>
+);

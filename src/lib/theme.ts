@@ -42,6 +42,7 @@ export function applyThemePreferences(preferences: ThemePreferences): void {
 
   const root = document.documentElement;
   root.dataset.theme = preferences.mode;
+  root.dataset.bsTheme = preferences.mode;
   root.dataset.accent = preferences.accent;
   root.style.colorScheme = preferences.mode;
 }
@@ -51,4 +52,3 @@ export function saveThemePreferences(preferences: ThemePreferences): void {
 
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
 }
-

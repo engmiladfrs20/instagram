@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
-import { FormInput, Plus, Download, CheckCircle2, FileSpreadsheet, UserCheck } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { CheckCircle2, FileSpreadsheet, FormInput, UserCheck } from 'lucide-react';
 import { Form, FormSubmission } from '../types';
+import { ResponsivePreview } from './ResponsivePreview';
 
 interface FormsViewProps {
   forms: Form[];
@@ -17,9 +18,13 @@ export const FormsView: React.FC<FormsViewProps> = ({ forms, submissions }) => {
     }
   }, [forms, selectedFormId]);
 
+  const selectedForm = forms.find((form) => form.id === selectedFormId) || forms[0];
+  const selectedSubmissions = useMemo(
+    () => submissions.filter((submission) => !selectedFormId || submission.formId === selectedFormId),
+    [selectedFormId, submissions],
+  );
+
   const handleExportCSV = () => {
-    const selectedSubmissions = submissions.filter((submission) => !selectedFormId || submission.formId === selectedFormId);
-    const selectedForm = forms.find((form) => form.id === selectedFormId);
     const fieldKeys = selectedForm?.fields.map((field) => field.fieldKey) || Array.from(new Set(selectedSubmissions.flatMap((submission) => Object.keys(submission.answers))));
     const escapeCsv = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`;
     const header = ['contact', 'username', 'status', 'createdAt', ...fieldKeys];
@@ -40,97 +45,91 @@ export const FormsView: React.FC<FormsViewProps> = ({ forms, submissions }) => {
   };
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+    <div className="space-y-5" dir="rtl">
+      <header className="workspace-page-header">
         <div>
-          <h1 className="text-xl font-bold text-white flex items-center space-x-2 space-x-reverse">
-            <FormInput className="w-5 h-5 text-purple-400" />
-            <span>فرم‌های مکالمه‌ای و دریافت مشخصات در دایرکت</span>
-          </h1>
-          <p className="text-xs text-slate-400 mt-1">
-            تعریف پرسش‌های گام‌به‌گام (نام، شماره همراه ایران با اعتبارسنجی 09xx، آدرس) جهت دریافت سریع سفارش.
-          </p>
+          <div className="workspace-page-kicker"><FormInput size={16} /> جمع‌آوری لید در گفتگو</div>
+          <h2>فرم‌های مکالمه‌ای</h2>
+          <p>اطلاعات موردنیاز را مرحله‌به‌مرحله از مخاطب بگیرید و قبل از انتشار، تجربهٔ پاسخ‌گویی را روی موبایل و دسکتاپ ببینید.</p>
         </div>
+        <div className="workspace-page-actions">
+          <button type="button" onClick={handleExportCSV} className="topbar-oauth"><FileSpreadsheet size={16} /> خروجی CSV پاسخ‌ها</button>
+        </div>
+      </header>
 
-        <button
-          onClick={handleExportCSV}
-          className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 flex items-center space-x-1.5 space-x-reverse transition"
-        >
-          <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-          <span>خروجی CSV لیدها</span>
-        </button>
-      </div>
+      {selectedForm ? (
+        <div className="builder-layout">
+          <div className="builder-layout-preview">
+            <ResponsivePreview
+              variant="form"
+              title={selectedForm.name}
+              message={selectedForm.description || 'اطلاعات شما با موفقیت ثبت شد.'}
+              formFields={selectedForm.fields.map((field) => field.label)}
+            />
+          </div>
 
-      {/* Forms List & Active Fields View */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Forms Card */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4 lg:col-span-1">
-          <h2 className="text-sm font-bold text-white border-b border-slate-800 pb-3">فرم‌های تعریف‌شده</h2>
-
-          {forms.map((form) => (
-            <div
-              key={form.id}
-              onClick={() => setSelectedFormId(form.id)}
-              className={`p-4 rounded-xl border transition cursor-pointer ${
-                selectedFormId === form.id
-                  ? 'bg-purple-950/20 border-purple-500'
-                  : 'bg-slate-950 border-slate-800 hover:border-slate-700'
-              }`}
-            >
-              <div className="flex items-center justify-between mb-1">
-                <h3 className="text-xs font-bold text-white">{form.name}</h3>
-                <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">
-                  {form.status === 'active' ? 'فعال' : 'پیش‌نویس'}
+          <div className="space-y-4">
+            <section className="surface-card p-4 p-lg-5">
+              <div className="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-4">
+                <div>
+                  <span className="text-secondary small">فرم انتخاب‌شده</span>
+                  <h3 className="h5 mt-1 mb-1">{selectedForm.name}</h3>
+                  <p className="text-secondary small mb-0">{selectedForm.description}</p>
+                </div>
+                <span className={`status-chip ${selectedForm.status === 'active' ? 'status-chip-success' : 'status-chip-muted'}`}>
+                  <CheckCircle2 size={13} /> {selectedForm.status === 'active' ? 'فعال' : 'پیش‌نویس'}
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400">{form.description}</p>
-              <p className="text-[10px] text-slate-500 font-mono mt-2">
-                {form.submissionCount} پاسخ تکمیل شده
-              </p>
-            </div>
-          ))}
-        </div>
-
-        {/* Form Submissions Table */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4 lg:col-span-2">
-          <h2 className="text-sm font-bold text-white border-b border-slate-800 pb-3">
-            آخرین پاسخ‌های ثبت شده کاربران
-          </h2>
-
-          <div className="divide-y divide-slate-800">
-            {submissions.filter((sub) => !selectedFormId || sub.formId === selectedFormId).map((sub) => (
-              <div key={sub.id} className="py-3.5 space-y-2">
-                <div className="flex items-center justify-between text-xs">
-                  <div className="flex items-center space-x-2 space-x-reverse">
-                    <UserCheck className="w-4 h-4 text-emerald-400" />
-                    <span className="font-bold text-white">{sub.contactName}</span>
-                    <span className="text-slate-400 dir-ltr font-mono">@{sub.contactUsername}</span>
+              <div className="row g-3">
+                {selectedForm.fields.map((field, index) => (
+                  <div className="col-12 col-md-6" key={field.id}>
+                    <div className="surface-field-card">
+                      <div className="d-flex align-items-center justify-content-between gap-2">
+                        <strong>{index + 1}. {field.label}</strong>
+                        <span>{field.fieldType}</span>
+                      </div>
+                      <p>{field.prompt}</p>
+                      {field.required && <small>پاسخ الزامی</small>}
+                    </div>
                   </div>
-                  <span className="text-[10px] text-slate-500 font-mono">
-                    {new Date(sub.completedAt || sub.createdAt).toLocaleDateString('fa-IR')}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 bg-slate-950 p-3 rounded-xl border border-slate-800 text-xs">
-                  <div>
-                    <span className="text-[10px] text-slate-500 block">نام کامل:</span>
-                    <span className="text-slate-200">{sub.answers.full_name}</span>
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-slate-500 block">شماره همراه:</span>
-                    <span className="text-slate-200 dir-ltr font-mono">{sub.answers.phone_number}</span>
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-slate-500 block">آدرس تحویل:</span>
-                    <span className="text-slate-200 truncate block">{sub.answers.delivery_city}</span>
-                  </div>
-                </div>
+                ))}
               </div>
-            ))}
+            </section>
+
+            <section className="surface-card p-4 p-lg-5">
+              <div className="d-flex align-items-center justify-content-between gap-3 mb-3">
+                <div><span className="text-secondary small">نتیجهٔ سناریو</span><h3 className="h6 mt-1 mb-0">آخرین پاسخ‌های ثبت‌شده</h3></div>
+                <span className="metric-inline"><UserCheck size={14} /> {selectedSubmissions.length.toLocaleString('fa-IR')} پاسخ</span>
+              </div>
+              <div className="form-selector-row" role="listbox" aria-label="انتخاب فرم">
+                {forms.map((form) => (
+                  <button type="button" key={form.id} onClick={() => setSelectedFormId(form.id)} className={`form-selector ${form.id === selectedForm.id ? 'is-selected' : ''}`} aria-selected={form.id === selectedForm.id}>
+                    <span>{form.name}</span><small>{form.submissionCount.toLocaleString('fa-IR')} پاسخ</small>
+                  </button>
+                ))}
+              </div>
+              <div className="submissions-list mt-3">
+                {selectedSubmissions.length === 0 ? (
+                  <div className="empty-state-card"><UserCheck size={24} /><strong>هنوز پاسخی ثبت نشده</strong><span>وقتی کاربر فرم را کامل کند، پاسخ او در این بخش نمایش داده می‌شود.</span></div>
+                ) : selectedSubmissions.slice(0, 6).map((submission) => (
+                  <article className="submission-row" key={submission.id}>
+                    <div className="d-flex align-items-center gap-2">
+                      <span className="submission-avatar"><UserCheck size={14} /></span>
+                      <div><strong>{submission.contactName}</strong><small dir="ltr">@{submission.contactUsername}</small></div>
+                    </div>
+                    <div className="submission-answer-preview">
+                      {Object.entries(submission.answers).slice(0, 2).map(([key, value]) => <span key={key}>{value}</span>)}
+                    </div>
+                    <time dateTime={submission.completedAt || submission.createdAt}>{new Date(submission.completedAt || submission.createdAt).toLocaleDateString('fa-IR')}</time>
+                  </article>
+                ))}
+              </div>
+            </section>
           </div>
         </div>
-      </div>
+      ) : (
+        <div className="empty-state-card"><FormInput size={30} /><strong>فرمی ساخته نشده است</strong><span>پس از ساخت اولین فرم مکالمه‌ای، تنظیمات و پیش‌نمایش آن از اینجا مدیریت می‌شود.</span></div>
+      )}
     </div>
   );
 };

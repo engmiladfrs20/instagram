@@ -74,12 +74,12 @@ export const AISettingsView: React.FC<AISettingsViewProps> = ({
 
   return (
     <div className="space-y-6" dir="rtl">
-      <div className="rounded-2xl border border-purple-500/20 bg-gradient-to-l from-purple-950/40 via-slate-900 to-slate-900 p-6">
+      <div className="ai-hero-panel rounded-2xl p-6">
         <div className="flex items-start justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="rounded-2xl bg-purple-600/20 p-3 text-purple-300"><BrainCircuit className="h-6 w-6" /></div>
+            <div className="ai-hero-icon rounded-2xl p-3 text-purple-300"><BrainCircuit className="h-6 w-6" /></div>
             <div>
-              <h1 className="text-xl font-bold text-white">دستیار هوشمند Gemini</h1>
+              <h1 className="ai-hero-title text-xl font-bold">دستیار هوشمند Gemini</h1>
               <p className="mt-1 text-xs text-slate-400">پاسخ‌گویی خودکار دایرکت و کامنت فقط بر اساس اطلاعاتی که برای همین Workspace ثبت می‌کنید.</p>
             </div>
           </div>

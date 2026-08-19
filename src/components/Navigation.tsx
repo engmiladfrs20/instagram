@@ -58,33 +58,33 @@ export const Navigation: React.FC<NavigationProps> = ({
 
   const menuSections: MenuSection[] = useMemo(() => [
     {
-      label: 'نمای کلی',
+      label: 'شروع',
       items: [
-        { id: 'dashboard', label: 'داشبورد', description: 'تصویر زنده کسب‌وکار', icon: LayoutDashboard },
-        { id: 'ai', label: 'دستیار هوشمند Gemini', description: 'پاسخ‌گویی با هوش مصنوعی', icon: BrainCircuit },
+        { id: 'dashboard', label: 'داشبورد', description: 'نمای کلی عملکرد و سلامت سیستم', icon: LayoutDashboard },
+        { id: 'ai', label: 'دستیار هوشمند', description: 'پاسخ‌گویی با دانش کسب‌وکار', icon: BrainCircuit },
       ],
     },
     {
-      label: 'اتوماسیون و تعامل',
+      label: 'تعامل و اتوماسیون',
       items: [
-        { id: 'automations', label: 'اتوماسیون‌ها و سناریوها', description: `${activeAutomationCount} سناریوی فعال`, icon: Workflow, badge: 'active' },
-        { id: 'inbox', label: 'صندوق پیام و CRM', description: 'مدیریت مکالمه‌ها', icon: MessageSquare, badge: unreadCount > 0 ? 'unread' : undefined },
-        { id: 'webhook_studio', label: 'تست و شبیه‌ساز وب‌هوک', description: 'آزمون اتصال Meta', icon: FlaskConical, highlight: true },
+        { id: 'automations', label: 'سناریوها', description: `${activeAutomationCount} سناریوی فعال`, icon: Workflow, badge: 'active' },
+        { id: 'inbox', label: 'صندوق ورودی', description: 'مدیریت گفتگو و پاسخ انسانی', icon: MessageSquare, badge: unreadCount > 0 ? 'unread' : undefined },
+        { id: 'webhook_studio', label: 'تست و وب‌هوک', description: 'بررسی اتصال و رویدادهای Meta', icon: FlaskConical, highlight: true },
       ],
     },
     {
-      label: 'محتوا و کانال‌ها',
+      label: 'کانال و محتوا',
       items: [
-        { id: 'accounts', label: 'حساب‌های اینستاگرام', description: 'اتصال رسمی Meta', icon: Instagram },
+        { id: 'accounts', label: 'حساب‌های اینستاگرام', description: 'اتصال رسمی و مدیریت دسترسی', icon: Instagram },
         { id: 'forms', label: 'فرم‌های مکالمه‌ای', description: 'جمع‌آوری اطلاعات لید', icon: FormInput },
-        { id: 'products', label: 'ویترین محصولات', description: 'کاتالوگ و پیشنهادها', icon: ShoppingBag },
+        { id: 'products', label: 'کاتالوگ محصولات', description: 'محصولات و پیشنهادهای فروش', icon: ShoppingBag },
       ],
     },
     {
-      label: 'مدیریت سیستم',
+      label: 'پایش و مدیریت',
       items: [
-        { id: 'operations', label: 'عملیات و خطاها', description: 'DLQ و گزارش رویدادها', icon: ShieldAlert },
-        { id: 'settings', label: 'تنظیمات و اعضا', description: 'Workspace و دسترسی‌ها', icon: Settings },
+        { id: 'operations', label: 'عملیات و خطاها', description: 'گزارش رویدادها و تلاش مجدد', icon: ShieldAlert },
+        { id: 'settings', label: 'تنظیمات و اعضا', description: 'فضای کاری و سطح دسترسی', icon: Settings },
       ],
     },
   ], [activeAutomationCount, unreadCount]);
@@ -100,33 +100,27 @@ export const Navigation: React.FC<NavigationProps> = ({
 
   return (
     <>
-      <aside className={`app-sidebar ${mobileOpen ? 'is-open' : ''}`} aria-label="ناوبری اصلی">
+      <aside id="app-navigation" className={`app-sidebar ${mobileOpen ? 'is-open' : ''}`} aria-label="ناوبری اصلی">
         <div className="app-sidebar-inner">
           <div className="sidebar-brand-row">
             <div className="sidebar-brand-mark" aria-hidden="true"><Zap size={21} fill="currentColor" /></div>
             <div className="sidebar-brand-copy">
               <strong>InstaFlow</strong>
-              <span>Meta automation suite</span>
+              <span>Instagram automation workspace</span>
             </div>
-            <button type="button" className="sidebar-close d-lg-none" onClick={() => setMobileOpen(false)} aria-label="بستن منو">
-              <X size={18} />
-            </button>
+            <button type="button" className="sidebar-close d-lg-none" onClick={() => setMobileOpen(false)} aria-label="بستن منو"><X size={18} /></button>
           </div>
 
-          <div className={`sidebar-account-card ${connected ? 'is-connected' : ''}`}>
-            <div className="sidebar-account-avatar">
-              {instagramAccount?.profilePicUrl ? (
-                <img src={instagramAccount.profilePicUrl} alt={instagramAccount.username} referrerPolicy="no-referrer" />
-              ) : <Instagram size={19} />}
-            </div>
-            <div className="sidebar-account-copy">
-              <div className="sidebar-account-name">{connected ? `@${instagramAccount.username}` : 'اکانت متصل نیست'}</div>
-              <div className="sidebar-account-meta"><span className={`account-status-dot ${connected ? 'is-online' : ''}`} />{connected ? 'Webhook فعال' : 'اتصال رسمی Meta'}</div>
-            </div>
-            <button type="button" className="sidebar-account-arrow" onClick={() => navigate('accounts')} aria-label="مدیریت حساب اینستاگرام">
-              <ChevronLeft size={16} />
-            </button>
-          </div>
+          <button type="button" className={`sidebar-account-card ${connected ? 'is-connected' : ''}`} onClick={() => navigate('accounts')}>
+            <span className="sidebar-account-avatar">
+              {instagramAccount?.profilePicUrl ? <img src={instagramAccount.profilePicUrl} alt={instagramAccount.username} referrerPolicy="no-referrer" /> : <Instagram size={19} />}
+            </span>
+            <span className="sidebar-account-copy">
+              <span className="sidebar-account-name">{connected ? `@${instagramAccount.username}` : 'اکانت متصل نیست'}</span>
+              <span className="sidebar-account-meta"><span className={`account-status-dot ${connected ? 'is-online' : ''}`} />{connected ? 'وب‌هوک فعال' : 'اتصال رسمی Meta'}</span>
+            </span>
+            <span className="sidebar-account-arrow" aria-hidden="true"><ChevronLeft size={16} /></span>
+          </button>
 
           <nav className="sidebar-navigation">
             {menuSections.map((section) => (
@@ -162,17 +156,11 @@ export const Navigation: React.FC<NavigationProps> = ({
           <div className="sidebar-bottom mt-auto">
             <div className="sidebar-health-card">
               <span className="sidebar-health-icon"><Sparkles size={15} /></span>
-              <div>
-                <strong>سامانه پایدار است</strong>
-                <span>آماده پردازش پیام‌ها</span>
-              </div>
+              <div><strong>سیستم پایدار است</strong><span>آماده پردازش پیام‌ها</span></div>
               <span className="sidebar-health-pulse" />
             </div>
-            <div className="sidebar-workspace-label"><span>Workspace</span><strong>{workspace.name}</strong></div>
-            <button type="button" className="sidebar-logout" onClick={onLogout}>
-              <LogOut size={16} />
-              خروج امن از حساب
-            </button>
+            <div className="sidebar-workspace-label"><span>فضای کاری</span><strong>{workspace.name}</strong></div>
+            <button type="button" className="sidebar-logout" onClick={onLogout}><LogOut size={16} /> خروج امن از حساب</button>
           </div>
         </div>
       </aside>
@@ -181,27 +169,16 @@ export const Navigation: React.FC<NavigationProps> = ({
 
       <header className="app-topbar">
         <div className="topbar-leading">
-          <button type="button" className="sidebar-mobile-toggle d-lg-none" onClick={() => setMobileOpen(true)} aria-label="بازکردن منوی کناری" aria-controls="app-navigation">
-            <Menu size={20} />
-          </button>
+          <button type="button" className="sidebar-mobile-toggle d-lg-none" onClick={() => setMobileOpen(true)} aria-label="بازکردن منوی کناری" aria-controls="app-navigation"><Menu size={20} /></button>
           <div className="topbar-page-title">
-            <span className="topbar-overline">پنل مدیریت اینستاگرام</span>
-            <div className="d-flex align-items-center gap-2">
-              <h1>{currentItem.label}</h1>
-              <span className="topbar-live-pill"><span /> Live</span>
-            </div>
+            <span className="topbar-overline">پنل مدیریت اتوماسیون اینستاگرام</span>
+            <div className="d-flex align-items-center gap-2"><h1>{currentItem.label}</h1><span className="topbar-live-pill"><span /> Live</span></div>
           </div>
         </div>
         <div className="topbar-actions">
-          <div className="topbar-workspace d-none d-md-flex">
-            <span className="topbar-workspace-mark">{workspace.name.slice(0, 1).toUpperCase()}</span>
-            <div><strong>{workspace.name}</strong><span>Workspace فعال</span></div>
-          </div>
+          <div className="topbar-workspace d-none d-md-flex"><span className="topbar-workspace-mark">{workspace.name.slice(0, 1).toUpperCase()}</span><div><strong>{workspace.name}</strong><span>فضای کاری فعال</span></div></div>
           <ThemeControls />
-          <button type="button" className="topbar-oauth" onClick={() => navigate('accounts')}>
-            <CheckCircle2 size={16} />
-            مدیریت اتصال
-          </button>
+          <button type="button" className="topbar-oauth" onClick={() => navigate('accounts')}><CheckCircle2 size={16} /> مدیریت اتصال</button>
         </div>
       </header>
     </>

@@ -21,6 +21,7 @@ import {
   HelpCircle,
 } from 'lucide-react';
 import { Automation, FlowNode, FlowEdge, NodeType } from '../types';
+import { ResponsivePreview } from './ResponsivePreview';
 
 interface AutomationsViewProps {
   automations: Automation[];
@@ -404,6 +405,13 @@ export const AutomationsView: React.FC<AutomationsViewProps> = ({
                 </button>
               </div>
             </div>
+
+            <ResponsivePreview
+              variant={nodes.some((node) => node.type === 'REPLY_PUBLIC_COMMENT') ? 'comment' : 'dm'}
+              title="پیش‌نمایش سناریو"
+              keyword={nodes.find((node) => node.type === 'TRIGGER')?.config.keywords?.[0] || 'قیمت'}
+              message={nodes.find((node) => node.type === 'SEND_PRIVATE_REPLY')?.config.text || 'سلام! پیام شما دریافت شد. در ادامه اطلاعات کامل را برایتان می‌فرستیم.'}
+            />
 
             {/* Visual Node Graph Editor Box */}
             <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 min-h-[460px] relative overflow-hidden bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px]">

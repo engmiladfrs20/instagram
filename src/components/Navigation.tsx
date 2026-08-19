@@ -15,6 +15,7 @@ import {
   BrainCircuit,
 } from 'lucide-react';
 import { Workspace, InstagramAccount } from '../types';
+import { ThemeControls } from './ThemeControls';
 
 interface NavigationProps {
   currentTab: string;
@@ -128,6 +129,8 @@ export const Navigation: React.FC<NavigationProps> = ({
             >
               <LogOut className="w-4 h-4" />
             </button>
+
+            <ThemeControls />
 
             <button
               onClick={() => setCurrentTab('accounts')}

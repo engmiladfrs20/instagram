@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { LockKeyhole, LogIn, UserPlus, Zap } from 'lucide-react';
+import { ThemeControls } from './ThemeControls';
 
 interface AuthViewProps {
   onAuthenticated: (payload: any) => void;
@@ -36,7 +37,10 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthenticated, requestJson
   };
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center px-4" dir="rtl">
+    <main className="relative min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center px-4" dir="rtl">
+      <div className="absolute left-4 top-4">
+        <ThemeControls />
+      </div>
       <form onSubmit={submit} className="w-full max-w-md rounded-3xl border border-slate-800 bg-slate-900 p-7 shadow-2xl">
         <div className="flex items-center gap-3 mb-8">
           <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-pink-600 via-purple-600 to-indigo-600 flex items-center justify-center">

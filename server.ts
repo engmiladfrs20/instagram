@@ -39,10 +39,10 @@ import {
   matchesAutomation,
   runtimeVersion,
 } from './src/lib/automationEngine';
-import { replyToInstagramComment, sendInstagramText, verifyInstagramAccount } from './src/lib/metaClient';
+import { listInstagramMedia, replyToInstagramComment, sendInstagramMessage, sendInstagramText, verifyInstagramAccount } from './src/lib/metaClient';
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3000);
 
 // Raw body parser for HMAC verification on webhooks
 app.use(
@@ -99,6 +99,15 @@ let webhookEvents = persistedState.webhookEvents || clone(INITIAL_WEBHOOK_EVENTS
 let dlqItems = persistedState.dlqItems || clone(INITIAL_DLQ_ITEMS);
 let auditLogs = persistedState.auditLogs || clone(INITIAL_AUDIT_LOGS);
 let analytics = persistedState.analytics || clone(INITIAL_ANALYTICS);
+
+const localOAuthStates = new Map<string, { expiresAt: number }>();
+
+function localInstagramOAuthRedirectUri(): string {
+  const configuredRedirectUri = process.env.INSTAGRAM_OAUTH_REDIRECT_URI?.trim();
+  if (configuredRedirectUri) return configuredRedirectUri;
+  const appOrigin = (process.env.APP_ORIGIN || process.env.APP_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+  return `${appOrigin}/api/v1/instagram/oauth/callback`;
+}
 
 function normalizeStateReferences() {
   const workspaceId = workspace.id;
@@ -604,13 +613,13 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
               commentId: String(externalMessageId),
               text: body.text || '',
             })
-          : await sendInstagramText({
+          : await sendInstagramMessage({
               accessToken: process.env.INSTAGRAM_ACCESS_TOKEN,
               graphHost: instagramAccount.graphHost,
               graphVersion: instagramAccount.graphVersion,
               instagramUserId: instagramAccount.metaIgUserId,
               recipientId: String(fromUser.id),
-              text: body.text || '',
+              content: body,
         });
         status = 'sent';
         externalId = nodeType === 'public_comment_reply'
@@ -681,21 +690,24 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
         }
         break;
       case 'SEND_PRIVATE_REPLY':
-        if (node.config.text && !(isComment && node.config.commentReplyDestination === 'comment')) {
+        if ((node.config.text || node.config.mediaUrl || node.config.buttons?.length) && !(isComment && node.config.commentReplyDestination === 'comment')) {
           const privateText = chooseVariant(node.config.responseVariants, node.config.text);
           await recordOutbound('private_reply', {
             text: privateText,
             quickReplies: node.config.quickReplies,
+            buttons: node.config.buttons,
+            mediaUrl: node.config.mediaUrl,
+            mediaType: node.config.mediaType,
             isPrivateReply: true,
           }, 'comment_to_dm_7day_rule');
         }
         break;
       case 'SEND_TEXT':
-        if (node.config.text) await recordOutbound('text', { text: node.config.text }, 'automation');
+        if (node.config.text || node.config.mediaUrl || node.config.buttons?.length) await recordOutbound('text', { text: node.config.text, buttons: node.config.buttons, mediaUrl: node.config.mediaUrl, mediaType: node.config.mediaType }, 'automation');
         break;
       case 'SEND_QUICK_REPLIES':
-        if (node.config.text || node.config.quickReplies?.length) {
-          await recordOutbound('quick_reply', { text: node.config.text, quickReplies: node.config.quickReplies }, 'automation');
+        if (node.config.text || node.config.quickReplies?.length || node.config.mediaUrl || node.config.buttons?.length) {
+          await recordOutbound('quick_reply', { text: node.config.text, quickReplies: node.config.quickReplies, buttons: node.config.buttons, mediaUrl: node.config.mediaUrl, mediaType: node.config.mediaType }, 'automation');
         }
         break;
       case 'SEND_PRODUCT_CAROUSEL': {
@@ -767,6 +779,57 @@ app.post('/api/v1/instagram/verify', async (_req, res) => {
     instagramAccount.lastTokenCheckAt = new Date().toISOString();
     persistState();
     res.status(502).json({ error: error instanceof Error ? error.message : 'Instagram verification failed' });
+  }
+});
+
+// Keep the local Express server behavior aligned with the deployed Worker.
+// Without this route Vite serves index.html for the request, so the OAuth modal
+// appears to do nothing when the app is run locally.
+app.get('/api/v1/instagram/oauth/start', (_req, res) => {
+  const appId = process.env.META_APP_ID?.trim();
+  const appSecret = process.env.META_APP_SECRET?.trim();
+  if (!appId || !appSecret) {
+    return res.status(503).json({ error: 'Meta OAuth is not configured. Set META_APP_ID and META_APP_SECRET in the server environment.' });
+  }
+
+  const state = crypto.randomBytes(32).toString('base64url');
+  const expiresAt = Date.now() + 10 * 60 * 1000;
+  for (const [savedState, value] of localOAuthStates) {
+    if (value.expiresAt <= Date.now()) localOAuthStates.delete(savedState);
+  }
+  localOAuthStates.set(state, { expiresAt });
+
+  const redirectUri = localInstagramOAuthRedirectUri();
+  const scope = ['instagram_business_basic', 'instagram_business_manage_messages', 'instagram_business_manage_comments'].join(',');
+  const authorizationUrl = `https://www.instagram.com/oauth/authorize?client_id=${encodeURIComponent(appId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}&state=${encodeURIComponent(state)}`;
+  return res.json({ authorizationUrl, redirectUri, expiresAt: new Date(expiresAt).toISOString() });
+});
+
+app.get('/api/v1/instagram/media', async (req, res) => {
+  try {
+    if (!process.env.INSTAGRAM_ACCESS_TOKEN) return res.status(503).json({ error: 'Instagram account token is not configured' });
+    if (!instagramAccount.metaIgUserId) return res.status(409).json({ error: 'Instagram account is not connected' });
+    const requestedLimit = Number(req.query.limit || 18);
+    const result = await listInstagramMedia({
+      accessToken: process.env.INSTAGRAM_ACCESS_TOKEN,
+      graphHost: instagramAccount.graphHost,
+      graphVersion: instagramAccount.graphVersion,
+      instagramUserId: instagramAccount.metaIgUserId,
+      limit: Number.isFinite(requestedLimit) ? requestedLimit : 18,
+    });
+    const media = (result.data || []).map((item) => ({
+      id: String(item.id),
+      caption: item.caption,
+      mediaType: item.media_type || 'UNKNOWN',
+      mediaProductType: item.media_product_type || 'UNKNOWN',
+      mediaUrl: item.media_url,
+      thumbnailUrl: item.thumbnail_url,
+      permalink: item.permalink,
+      timestamp: item.timestamp,
+    }));
+    res.json({ media, paging: result.paging });
+  } catch (error) {
+    res.status(502).json({ error: error instanceof Error ? error.message : 'Instagram media request failed' });
   }
 });
 

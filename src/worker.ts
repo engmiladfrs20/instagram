@@ -28,6 +28,7 @@ import {
   WorkspaceMember,
 } from './types';
 import { executableNodes, IncomingContext, matchesAutomation, runtimeVersion } from './lib/automationEngine';
+import { listInstagramMedia, sendInstagramMessage } from './lib/metaClient';
 
 type Env = Cloudflare.Env & {
   META_APP_SECRET?: string;
@@ -925,25 +926,27 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
   const recordOutbound = async (messageType: Message['messageType'], content: Message['content'], policyBasis: string) => {
     let status: Message['status'] = 'queued';
     let externalId: string | undefined;
-    if (env.META_LIVE_MODE === 'true' && content.text) {
+    if (env.META_LIVE_MODE === 'true' && (content.text || content.mediaUrl || content.buttons?.length)) {
       const accessToken = (await getInstagramAccessToken(env)) || '';
       const isPublicCommentReply = messageType === 'public_comment_reply' && isComment && externalMessageId;
-      const url = isPublicCommentReply
-        ? `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/${encodeURIComponent(String(externalMessageId))}/replies?access_token=${encodeURIComponent(accessToken)}`
-        : `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/${encodeURIComponent(instagramAccount.metaIgUserId)}/messages?access_token=${encodeURIComponent(accessToken)}`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(
-          isPublicCommentReply
-            ? { message: content.text }
-            : { recipient: { id: String(fromUser.id) }, message: { text: content.text } },
-        ),
-      });
-      const result: any = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result?.error?.message || `Meta API returned HTTP ${response.status}`);
+      if (isPublicCommentReply) {
+        const url = `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/${encodeURIComponent(String(externalMessageId))}/replies?access_token=${encodeURIComponent(accessToken)}`;
+        const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: content.text || '' }) });
+        const result: any = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result?.error?.message || `Meta API returned HTTP ${response.status}`);
+        externalId = result.id;
+      } else {
+        const result = await sendInstagramMessage({
+          accessToken,
+          graphHost: instagramAccount.graphHost,
+          graphVersion: instagramAccount.graphVersion,
+          instagramUserId: instagramAccount.metaIgUserId,
+          recipientId: String(fromUser.id),
+          content,
+        });
+        externalId = result.message_id;
+      }
       status = 'sent';
-      externalId = result.message_id || result.id;
     }
     const sentAt = new Date().toISOString();
     messages.push({
@@ -981,13 +984,13 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
     if (node.type === 'REPLY_PUBLIC_COMMENT' && isComment && node.config.commentReplyDestination !== 'dm') {
       const publicText = chooseVariant(node.config.publicResponseVariants, node.config.publicReplyText);
       if (publicText) await recordOutbound('public_comment_reply', { text: publicText }, 'public_comment_moderation');
-    } else if (node.type === 'SEND_PRIVATE_REPLY' && node.config.text && !(isComment && node.config.commentReplyDestination === 'comment')) {
+    } else if (node.type === 'SEND_PRIVATE_REPLY' && (node.config.text || node.config.mediaUrl || node.config.buttons?.length) && !(isComment && node.config.commentReplyDestination === 'comment')) {
       const privateText = chooseVariant(node.config.responseVariants, node.config.text);
-      await recordOutbound('private_reply', { text: privateText, quickReplies: node.config.quickReplies, isPrivateReply: true }, 'comment_to_dm_7day_rule');
-    } else if (node.type === 'SEND_TEXT' && node.config.text) {
-      await recordOutbound('text', { text: node.config.text }, 'automation');
-    } else if (node.type === 'SEND_QUICK_REPLIES' && (node.config.text || node.config.quickReplies?.length)) {
-      await recordOutbound('quick_reply', { text: node.config.text, quickReplies: node.config.quickReplies }, 'automation');
+      await recordOutbound('private_reply', { text: privateText, quickReplies: node.config.quickReplies, buttons: node.config.buttons, mediaUrl: node.config.mediaUrl, mediaType: node.config.mediaType, isPrivateReply: true }, 'comment_to_dm_7day_rule');
+    } else if (node.type === 'SEND_TEXT' && (node.config.text || node.config.mediaUrl || node.config.buttons?.length)) {
+      await recordOutbound('text', { text: node.config.text, buttons: node.config.buttons, mediaUrl: node.config.mediaUrl, mediaType: node.config.mediaType }, 'automation');
+    } else if (node.type === 'SEND_QUICK_REPLIES' && (node.config.text || node.config.quickReplies?.length || node.config.mediaUrl || node.config.buttons?.length)) {
+      await recordOutbound('quick_reply', { text: node.config.text, quickReplies: node.config.quickReplies, buttons: node.config.buttons, mediaUrl: node.config.mediaUrl, mediaType: node.config.mediaType }, 'automation');
     } else if (node.type === 'ADD_TAG' && node.config.tagToAdd && !contact.tags.includes(node.config.tagToAdd)) {
       contact.tags.push(node.config.tagToAdd);
     } else if (node.type === 'SET_CONTACT_FIELD' && node.config.fieldToSet) {
@@ -1475,6 +1478,35 @@ export default {
       instagramAccount.lastTokenCheckAt = new Date().toISOString();
       await persistWorkerState(env);
       return jsonResponse({ instagramAccount, profile });
+    }
+
+    if (pathname === '/api/v1/instagram/media' && method === 'GET') {
+      const accessToken = await getInstagramAccessToken(env);
+      if (!accessToken) return jsonResponse({ error: 'Instagram account token is not configured' }, 503, env.APP_ORIGIN);
+      if (!instagramAccount.metaIgUserId) return jsonResponse({ error: 'Instagram account is not connected' }, 409, env.APP_ORIGIN);
+      const requestedLimit = Number(searchParams.get('limit') || 18);
+      try {
+        const result = await listInstagramMedia({
+          accessToken,
+          graphHost: instagramAccount.graphHost,
+          graphVersion: instagramAccount.graphVersion,
+          instagramUserId: instagramAccount.metaIgUserId,
+          limit: Number.isFinite(requestedLimit) ? requestedLimit : 18,
+        });
+        const media = (result.data || []).map((item) => ({
+          id: String(item.id),
+          caption: item.caption,
+          mediaType: item.media_type || 'UNKNOWN',
+          mediaProductType: item.media_product_type || 'UNKNOWN',
+          mediaUrl: item.media_url,
+          thumbnailUrl: item.thumbnail_url,
+          permalink: item.permalink,
+          timestamp: item.timestamp,
+        }));
+        return jsonResponse({ media, paging: result.paging }, 200, env.APP_ORIGIN);
+      } catch (error) {
+        return jsonResponse({ error: error instanceof Error ? error.message : 'Instagram media request failed' }, 502, env.APP_ORIGIN);
+      }
     }
 
     if (pathname === '/api/v1/automations' && method === 'GET') {

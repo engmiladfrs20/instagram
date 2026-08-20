@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowLeft,
   Check,
@@ -22,13 +22,24 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { Automation, FlowEdge, FlowNode, FormField, TriggerType } from '../types';
+import { Automation, FlowEdge, FlowNode, FormField, InstagramMedia, TriggerType } from '../types';
 import { ResponsivePreview } from './ResponsivePreview';
 
 type StudioKind = 'dm' | 'comment' | 'form' | 'followup';
 type MatchMode = 'exact' | 'contains' | 'starts_with' | 'regex';
 type CommentDestination = 'dm' | 'comment' | 'both';
 type RepeatPolicy = 'keep_all' | 'limit' | 'replace';
+
+export type ResponseMediaDraft = {
+  type: 'image' | 'video' | 'audio';
+  url: string;
+};
+
+export type ResponseButtonDraft = {
+  title: string;
+  url?: string;
+  payload?: string;
+};
 
 interface FormQuestionDraft {
   id: string;
@@ -46,6 +57,8 @@ interface StudioDraft {
   message: string;
   variants: string[];
   publicVariants: string[];
+  responseMedia: ResponseMediaDraft[];
+  responseButtons: ResponseButtonDraft[];
   postScope: 'all' | 'selected' | 'live';
   postIds: string[];
   destination: CommentDestination;
@@ -70,19 +83,6 @@ interface AutomationsViewProps {
   onPublishAutomation: (autoId: string) => Promise<void>;
   onCreateAutomation: () => Promise<Automation>;
 }
-
-interface DemoPost {
-  id: string;
-  title: string;
-  image: string;
-  meta: string;
-}
-
-const DEMO_POSTS: DemoPost[] = [
-  { id: '17891122334455', title: 'مانتوی کتان تابستانه', meta: 'پست · ۲ روز پیش', image: 'https://images.unsplash.com/photo-1551488831-00ddcb6c6bd3?auto=format&fit=crop&w=420&q=80' },
-  { id: '17891122334456', title: 'رنگ‌بندی جدید', meta: 'ریلز · ۵ روز پیش', image: 'https://images.unsplash.com/photo-1490481651871-ab68de25d43d?auto=format&fit=crop&w=420&q=80' },
-  { id: '17891122334457', title: 'استایل روزمره', meta: 'پست · هفتهٔ قبل', image: 'https://images.unsplash.com/photo-1483985988355-763728e1935b?auto=format&fit=crop&w=420&q=80' },
-];
 
 const kindLabels: Record<StudioKind, string> = {
   dm: 'پاسخ دایرکت',
@@ -121,6 +121,8 @@ const defaultDraft = (kind: StudioKind): StudioDraft => ({
   message: kind === 'comment' ? 'سلام! جزئیات کامل و لینک برای شما ارسال شد.' : 'سلام! پیام شما دریافت شد. چطور می‌توانیم راهنمایی‌تان کنیم؟',
   variants: kind === 'comment' ? ['سلام! جزئیات کامل و لینک برای شما ارسال شد.', 'مرسی از کامنتت! اطلاعات کامل در دایرکت برایت ارسال شد.'] : ['سلام! پیام شما دریافت شد. چطور می‌توانیم راهنمایی‌تان کنیم؟'],
   publicVariants: ['سلام! جزئیات در دایرکت برای شما ارسال شد.'],
+  responseMedia: [],
+  responseButtons: [],
   postScope: 'all',
   postIds: [],
   destination: 'both',
@@ -141,7 +143,9 @@ const defaultDraft = (kind: StudioKind): StudioDraft => ({
 
 const inferKind = (automation: Automation): StudioKind => {
   const nodes = automation.currentVersion?.nodes || [];
-  if (nodes.some((node) => node.type === 'WAIT' || node.config.followUpCondition)) return 'followup';
+  // `followUpCondition` is also stored on the trigger for regular DM/comment
+  // scenarios. Only an actual WAIT node represents a follow-up automation.
+  if (nodes.some((node) => node.type === 'WAIT')) return 'followup';
   if (nodes.some((node) => node.type === 'ASK_FORM_FIELD')) return 'form';
   if (automation.triggerType.includes('COMMENT') || nodes.some((node) => node.type === 'REPLY_PUBLIC_COMMENT')) return 'comment';
   return 'dm';
@@ -158,6 +162,10 @@ const draftFromAutomation = (automation: Automation): StudioDraft => {
   const destination = publicNode && privateNode ? 'both' : publicNode ? 'comment' : 'dm';
   const privateVariants = privateNode?.config.responseVariants?.filter(Boolean) || [];
   const publicVariants = publicNode?.config.publicResponseVariants?.filter(Boolean) || [];
+  const responseMedia = privateNode?.config.mediaUrl && privateNode.config.mediaType
+    ? [{ type: privateNode.config.mediaType, url: privateNode.config.mediaUrl }]
+    : draft.responseMedia;
+  const responseButtons = privateNode?.config.buttons || draft.responseButtons;
 
   return {
     ...draft,
@@ -165,9 +173,11 @@ const draftFromAutomation = (automation: Automation): StudioDraft => {
     description: automation.description || draft.description,
     keywords: trigger?.config.keywords?.length ? trigger.config.keywords : automation.keywords,
     matchMode: trigger?.config.matchMode || draft.matchMode,
-    message: privateNode?.config.text || publicNode?.config.publicReplyText || draft.message,
+    message: privateVariants[0] || privateNode?.config.text || publicNode?.config.publicReplyText || draft.message,
     variants: privateVariants.length ? privateVariants : [privateNode?.config.text || draft.message],
     publicVariants: publicVariants.length ? publicVariants : [publicNode?.config.publicReplyText || draft.publicVariants[0]],
+    responseMedia,
+    responseButtons,
     postScope: trigger?.config.postScope || draft.postScope,
     postIds: trigger?.config.postIds || draft.postIds,
     destination,
@@ -252,12 +262,18 @@ const buildNodes = (kind: StudioKind, draft: StudioDraft): { nodes: FlowNode[]; 
     connect(makeNode('node_followup_message', 'SEND_PRIVATE_REPLY', 'ارسال پیام پیگیری', {
       text: draft.followUpMessage,
       responseVariants: draft.variants,
+      mediaUrl: draft.responseMedia[0]?.url,
+      mediaType: draft.responseMedia[0]?.type,
+      buttons: draft.responseButtons,
     }, 2));
   } else if (kind === 'comment' && (draft.destination === 'dm' || draft.destination === 'both')) {
     connect(makeNode('node_private_reply', 'SEND_PRIVATE_REPLY', 'پاسخ خصوصی در دایرکت', {
       text: draft.message,
       responseVariants: draft.variants,
       quickReplies: [],
+      mediaUrl: draft.responseMedia[0]?.url,
+      mediaType: draft.responseMedia[0]?.type,
+      buttons: draft.responseButtons,
     }, 2), 'دایرکت');
   } else if (kind === 'dm') {
     connect(makeNode('node_private_reply', 'SEND_PRIVATE_REPLY', 'ارسال پاسخ دایرکت', {
@@ -265,6 +281,9 @@ const buildNodes = (kind: StudioKind, draft: StudioDraft): { nodes: FlowNode[]; 
       responseVariants: draft.variants,
       quickReplies: [],
       linkMessage: draft.linkMessage,
+      mediaUrl: draft.responseMedia[0]?.url,
+      mediaType: draft.responseMedia[0]?.type,
+      buttons: draft.responseButtons,
     }, 1), 'پاسخ');
   }
   return { nodes, edges, triggerType };
@@ -308,8 +327,37 @@ export const AutomationsView: React.FC<AutomationsViewProps> = ({
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string[]>([]);
   const [error, setError] = useState('');
+  const [instagramMedia, setInstagramMedia] = useState<InstagramMedia[]>([]);
+  const [mediaLoading, setMediaLoading] = useState(false);
+  const [mediaError, setMediaError] = useState('');
+  const [mediaReloadKey, setMediaReloadKey] = useState(0);
 
   const selectedAuto = automations.find((auto) => auto.id === selectedAutoId);
+
+  useEffect(() => {
+    if (studioKind !== 'comment' || draft.postScope !== 'selected') return;
+    let cancelled = false;
+    setMediaLoading(true);
+    setMediaError('');
+    fetch('/api/v1/instagram/media?limit=18', { credentials: 'include' })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({})) as { error?: string; media?: InstagramMedia[] };
+        if (!response.ok) throw new Error(payload.error || `دریافت پست‌ها ناموفق بود (${response.status})`);
+        return payload as { media?: InstagramMedia[] };
+      })
+      .then((payload) => {
+        if (!cancelled) setInstagramMedia(payload.media || []);
+      })
+      .catch((mediaRequestError) => {
+        if (!cancelled) setMediaError(mediaRequestError instanceof Error ? mediaRequestError.message : 'دریافت پست‌ها ناموفق بود.');
+      })
+      .finally(() => {
+        if (!cancelled) setMediaLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [studioKind, draft.postScope, mediaReloadKey]);
   const filteredAutomations = useMemo(() => automations.filter((auto) => {
     const matchesType = filter === 'all' || inferKind(auto) === filter;
     const haystack = `${auto.name} ${auto.description || ''} ${auto.keywords.join(' ')}`.toLocaleLowerCase('fa-IR');
@@ -404,7 +452,12 @@ export const AutomationsView: React.FC<AutomationsViewProps> = ({
 
   const updateVariant = (index: number, value: string, publicVariant = false) => {
     const key = publicVariant ? 'publicVariants' : 'variants';
-    updateDraft(key, draft[key].map((item, itemIndex) => itemIndex === index ? value : item));
+    const next = draft[key].map((item, itemIndex) => itemIndex === index ? value : item);
+    setDraft((previous) => ({
+      ...previous,
+      [key]: next,
+      ...(publicVariant ? {} : { message: next[0] || '' }),
+    }));
   };
 
   const removeVariant = (index: number, publicVariant = false) => {
@@ -478,7 +531,20 @@ export const AutomationsView: React.FC<AutomationsViewProps> = ({
 
           <div className="direct-builder-shell">
             <aside className="direct-builder-preview">
-              <ResponsivePreview variant={studioKind === 'comment' ? 'comment' : studioKind === 'form' ? 'form' : 'dm'} title={draft.name || kindLabels[studioKind]} message={studioKind === 'form' ? draft.formCompletionMessage : studioKind === 'followup' ? draft.followUpMessage : draft.message} keyword={draft.keywords[0] || 'سلام'} formFields={draft.questions.map((question) => question.label)} />
+              <ResponsivePreview
+                variant={studioKind === 'comment' ? 'comment' : studioKind === 'form' ? 'form' : 'dm'}
+                title={draft.name || kindLabels[studioKind]}
+                message={studioKind === 'form' ? draft.formCompletionMessage : studioKind === 'followup' ? draft.followUpMessage : draft.variants[0] || draft.message}
+                keyword={draft.keywords[0] || 'سلام'}
+                formFields={draft.questions.map((question) => question.label)}
+                media={draft.responseMedia}
+                buttons={draft.responseButtons}
+                onAddText={() => addVariant()}
+                onAddMedia={(media) => updateDraft('responseMedia', [...draft.responseMedia.filter((item) => item.type !== media.type), media])}
+                onAddButton={(button) => updateDraft('responseButtons', [...draft.responseButtons, button])}
+                onRemoveMedia={(type) => updateDraft('responseMedia', draft.responseMedia.filter((item) => item.type !== type))}
+                onRemoveButton={(index) => updateDraft('responseButtons', draft.responseButtons.filter((_, itemIndex) => itemIndex !== index))}
+              />
               <div className="direct-preview-tip"><Sparkles size={15} /><span>هر تغییر را ابتدا اینجا بررسی کنید؛ انتشار از سمت Meta جدا از پیش‌نمایش انجام می‌شود.</span></div>
             </aside>
 
@@ -491,7 +557,7 @@ export const AutomationsView: React.FC<AutomationsViewProps> = ({
               <section className="direct-panel">
                 <div className="direct-panel-heading"><div><span>تنظیمات فعال‌سازی</span><h3>چه زمانی این سناریو اجرا شود؟</h3></div><span className="direct-panel-number">۰۲</span></div>
                 {studioKind !== 'followup' && <><div className="direct-field-label-row"><label className="direct-label">کلمات یا عبارت‌های فعال‌ساز</label><small>با Enter یا ویرگول اضافه کنید</small></div><ChipEditor values={draft.keywords} onAdd={addKeyword} onRemove={(index) => updateDraft('keywords', draft.keywords.filter((_, itemIndex) => itemIndex !== index))} /><div className="row g-3 mt-1"><div className="col-12 col-md-6"><SelectField label="نوع تطبیق" value={draft.matchMode} onChange={(value) => updateDraft('matchMode', value as MatchMode)} options={[['contains', 'شامل عبارت'], ['exact', 'برابر با عبارت'], ['starts_with', 'شروع‌شده با عبارت'], ['regex', 'الگوی پیشرفته']]} /></div>{studioKind === 'dm' && <div className="col-12 col-md-6"><ToggleField label="فقط پاسخ به ریپلای استوری" checked={draft.storyReplyOnly} onChange={(value) => updateDraft('storyReplyOnly', value)} /></div>}</div></>}
-                {studioKind === 'comment' && <CommentActivation draft={draft} updateDraft={updateDraft} />}
+                {studioKind === 'comment' && <CommentActivation draft={draft} updateDraft={updateDraft} media={instagramMedia} mediaLoading={mediaLoading} mediaError={mediaError} onReloadMedia={() => setMediaReloadKey((current) => current + 1)} />}
                 {studioKind === 'form' && <div className="direct-option-grid"><ToggleField label="پیام فعال‌ساز لینک شود" checked={draft.linkMessage} onChange={(value) => updateDraft('linkMessage', value)} /><SelectField label="مدیریت پاسخ‌های تکراری" value={draft.repeatPolicy} onChange={(value) => updateDraft('repeatPolicy', value as RepeatPolicy)} options={[['keep_all', 'همه پاسخ‌ها حفظ شود'], ['limit', 'تعداد محدود حفظ شود'], ['replace', 'پاسخ جدید جایگزین شود']]} />{draft.repeatPolicy === 'limit' && <NumberField label="تعداد پاسخ قابل نگهداری" value={draft.repeatLimit} onChange={(value) => updateDraft('repeatLimit', value)} />}</div>}
                 {studioKind === 'followup' && <FollowUpActivation draft={draft} automations={automations} updateDraft={updateDraft} />}
               </section>
@@ -525,13 +591,13 @@ interface ChipEditorProps { values: string[]; onAdd: (value: string) => void; on
 const ChipEditor: React.FC<ChipEditorProps> = ({ values, onAdd, onRemove }) => { const [input, setInput] = useState(''); const commit = () => { onAdd(input); setInput(''); }; return <div className="direct-chip-editor">{values.map((value, index) => <span className="direct-chip" key={`${value}-${index}`}>{value}<button type="button" onClick={() => onRemove(index)} aria-label={`حذف ${value}`}><X size={12} /></button></span>)}<input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ',') { event.preventDefault(); commit(); } }} onBlur={commit} placeholder="مثلاً قیمت" /></div>; };
 
 interface VariantEditorProps { label: string; values: string[]; onAdd: () => void; onChange: (index: number, value: string) => void; onRemove: (index: number) => void; }
-const VariantEditor: React.FC<VariantEditorProps> = ({ label, values, onAdd, onChange, onRemove }) => <div className="direct-variant-editor"><div className="direct-field-label-row"><label className="direct-label">{label}</label><button type="button" className="direct-inline-btn" onClick={onAdd}><Plus size={14} /> پاسخ جدید</button></div>{values.map((value, index) => <div className="direct-variant-row" key={`${index}-${value}`}><span>{index + 1}</span><textarea className="form-control direct-control" rows={2} value={value} onChange={(event) => onChange(index, event.target.value)} /><button type="button" onClick={() => onRemove(index)} aria-label="حذف پاسخ"><Trash2 size={15} /></button></div>)}</div>;
+const VariantEditor: React.FC<VariantEditorProps> = ({ label, values, onAdd, onChange, onRemove }) => <div className="direct-variant-editor"><div className="direct-field-label-row"><label className="direct-label">{label}</label><button type="button" className="direct-inline-btn" onClick={onAdd}><Plus size={14} /> پاسخ جدید</button></div>{values.map((value, index) => <div className="direct-variant-row" key={`variant-${index}`}><span>{index + 1}</span><textarea className="form-control direct-control" rows={2} value={value} onChange={(event) => onChange(index, event.target.value)} /><button type="button" onClick={() => onRemove(index)} aria-label="حذف پاسخ"><Trash2 size={15} /></button></div>)}</div>;
 
 interface PanelHeadingProps { label: string; title: string; number: string; }
 const PanelHeading: React.FC<PanelHeadingProps> = ({ label, title, number }) => <div className="direct-panel-heading"><div><span>{label}</span><h3>{title}</h3></div><span className="direct-panel-number">{number}</span></div>;
 
-interface CommentActivationProps { draft: StudioDraft; updateDraft: <K extends keyof StudioDraft>(key: K, value: StudioDraft[K]) => void; }
-const CommentActivation: React.FC<CommentActivationProps> = ({ draft, updateDraft }) => <div className="direct-comment-options"><SelectField label="محدودهٔ پست" value={draft.postScope} onChange={(value) => updateDraft('postScope', value as StudioDraft['postScope'])} options={[['all', 'روی همهٔ پست‌ها'], ['selected', 'فقط پست‌های انتخاب‌شده'], ['live', 'فقط لایو']]} />{draft.postScope === 'selected' && <div className="direct-post-picker"><div className="direct-field-label-row"><span className="direct-label">انتخاب پست</span><small>{draft.postIds.length} پست انتخاب شده</small></div><div className="direct-post-grid">{DEMO_POSTS.map((post) => <button type="button" key={post.id} className={`direct-post-card ${draft.postIds.includes(post.id) ? 'is-selected' : ''}`} onClick={() => updateDraft('postIds', draft.postIds.includes(post.id) ? draft.postIds.filter((id) => id !== post.id) : [...draft.postIds, post.id])}><img src={post.image} alt="" /><span><strong>{post.title}</strong><small>{post.meta}</small></span>{draft.postIds.includes(post.id) && <Check size={15} />}</button>)}</div></div>}<div className="row g-3"><div className="col-12 col-md-6"><SelectField label="پاسخ در کجا ارسال شود؟" value={draft.destination} onChange={(value) => updateDraft('destination', value as CommentDestination)} options={[['dm', 'فقط دایرکت'], ['comment', 'فقط زیر کامنت'], ['both', 'دایرکت و کامنت']]} /></div><div className="col-12 col-md-6"><ToggleField label="فقط برای دنبال‌کننده‌ها" checked={draft.requireFollow} onChange={(value) => updateDraft('requireFollow', value)} /></div></div><div className="direct-helper"><UsersRound size={16} /><span>این گزینه فقط وقتی اجرا را محدود می‌کند که وضعیت دنبال‌کردن در رویداد Meta در دسترس باشد؛ سیستم به‌صورت خودکار کسی را فالو نمی‌کند.</span></div></div>;
+interface CommentActivationProps { draft: StudioDraft; updateDraft: <K extends keyof StudioDraft>(key: K, value: StudioDraft[K]) => void; media: InstagramMedia[]; mediaLoading: boolean; mediaError: string; onReloadMedia: () => void; }
+const CommentActivation: React.FC<CommentActivationProps> = ({ draft, updateDraft, media, mediaLoading, mediaError, onReloadMedia }) => <div className="direct-comment-options"><SelectField label="محدودهٔ پست" value={draft.postScope} onChange={(value) => updateDraft('postScope', value as StudioDraft['postScope'])} options={[['all', 'روی همهٔ پست‌ها'], ['selected', 'فقط پست‌های انتخاب‌شده'], ['live', 'فقط لایو']]} />{draft.postScope === 'selected' && <div className="direct-post-picker"><div className="direct-field-label-row"><div><span className="direct-label">انتخاب پست</span><small>فقط پست‌های واقعی اکانت متصل نمایش داده می‌شوند</small></div><span className="direct-post-count">{draft.postIds.length} انتخاب شده</span></div>{mediaLoading && <div className="direct-post-state"><span className="direct-loading-dot" /> در حال دریافت پست‌های پیج...</div>}{!mediaLoading && mediaError && <div className="direct-post-state is-error"><span>{mediaError}</span><button type="button" className="direct-inline-btn" onClick={onReloadMedia}>تلاش دوباره</button></div>}{!mediaLoading && !mediaError && media.length === 0 && <div className="direct-post-state">برای این اکانت پستی از API دریافت نشد.</div>}{!mediaLoading && !mediaError && media.length > 0 && <div className="direct-post-grid">{media.map((post) => { const selected = draft.postIds.includes(post.id); const title = post.caption?.split('\n')[0]?.trim() || (post.mediaProductType === 'REELS' ? 'ریلز اینستاگرام' : 'پست اینستاگرام'); const meta = `${post.mediaProductType === 'REELS' ? 'ریلز' : post.mediaType === 'VIDEO' ? 'ویدیو' : 'پست'}${post.timestamp ? ` · ${new Date(post.timestamp).toLocaleDateString('fa-IR')}` : ''}`; return <button type="button" key={post.id} className={`direct-post-card ${selected ? 'is-selected' : ''}`} onClick={() => updateDraft('postIds', selected ? draft.postIds.filter((id) => id !== post.id) : [...draft.postIds, post.id])}>{post.thumbnailUrl || post.mediaUrl ? <img src={post.thumbnailUrl || post.mediaUrl} alt={title} loading="lazy" /> : <span className="direct-post-placeholder"><ImageIcon size={18} /></span>}<span><strong>{title}</strong><small>{meta}</small></span>{selected && <Check size={15} />}</button>; })}</div>}</div>}<div className="row g-3"><div className="col-12 col-md-6"><SelectField label="پاسخ در کجا ارسال شود؟" value={draft.destination} onChange={(value) => updateDraft('destination', value as CommentDestination)} options={[['dm', 'فقط دایرکت'], ['comment', 'فقط زیر کامنت'], ['both', 'دایرکت و کامنت']]} /></div><div className="col-12 col-md-6"><ToggleField label="فقط برای دنبال‌کننده‌ها" checked={draft.requireFollow} onChange={(value) => updateDraft('requireFollow', value)} /></div></div><div className="direct-helper"><UsersRound size={16} /><span>این گزینه فقط وقتی اجرا را محدود می‌کند که وضعیت دنبال‌کردن در رویداد Meta در دسترس باشد؛ سیستم به‌صورت خودکار کسی را فالو نمی‌کند.</span></div></div>;
 
 interface FormQuestionsProps { draft: StudioDraft; updateDraft: <K extends keyof StudioDraft>(key: K, value: StudioDraft[K]) => void; }
 const FormQuestions: React.FC<FormQuestionsProps> = ({ draft, updateDraft }) => <section className="direct-panel"><PanelHeading label="تنظیمات فرم" title="سؤال‌ها را کوتاه و مرحله‌ای بچینید" number="۰۳" /><div className="row g-3 mb-3"><div className="col-12 col-md-6"><label className="direct-label">عنوان فرم</label><input className="form-control direct-control" value={draft.formTitle} onChange={(event) => updateDraft('formTitle', event.target.value)} /></div><div className="col-12 col-md-6"><label className="direct-label">متن دکمهٔ خروج</label><input className="form-control direct-control" value={draft.formExitLabel} onChange={(event) => updateDraft('formExitLabel', event.target.value)} /></div></div><div className="direct-question-list">{draft.questions.map((question, index) => <article className="direct-question-card" key={question.id}><span className="direct-question-index">{index + 1}</span><div><strong>{question.label}</strong><p>{question.prompt}</p><small>{question.fieldType} · {question.required ? 'الزامی' : 'اختیاری'}</small></div><button type="button" onClick={() => updateDraft('questions', draft.questions.filter((item) => item.id !== question.id))} aria-label="حذف سؤال"><Trash2 size={15} /></button></article>)}</div><button type="button" className="direct-add-question" onClick={() => updateDraft('questions', [...draft.questions, makeQuestion(draft.questions.length)])}><Plus size={16} /> افزودن سؤال</button><label className="direct-label mt-3">پیام تکمیل فرم</label><textarea className="form-control direct-control" rows={3} value={draft.formCompletionMessage} onChange={(event) => updateDraft('formCompletionMessage', event.target.value)} /></section>;

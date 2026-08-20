@@ -1,15 +1,16 @@
 import React, { useState } from 'react';
 import {
-  Instagram,
+  ArrowRight,
+  Check,
   CheckCircle2,
-  ShieldCheck,
-  RefreshCw,
-  Key,
-  AlertTriangle,
+  CircleAlert,
   ExternalLink,
-  Layers,
-  Lock,
-  Unlock,
+  Instagram,
+  KeyRound,
+  RefreshCw,
+  ShieldCheck,
+  Webhook,
+  X,
 } from 'lucide-react';
 import { InstagramAccount } from '../types';
 
@@ -19,238 +20,141 @@ interface InstagramAccountsViewProps {
   onStartOAuth: () => Promise<string>;
 }
 
+const requestedScopes = [
+  ['instagram_business_basic', 'مشاهده پروفایل و رسانه‌ها'],
+  ['instagram_business_manage_comments', 'مدیریت و پاسخ به کامنت‌ها'],
+  ['instagram_business_manage_messages', 'دریافت و ارسال دایرکت'],
+];
+
+const fallbackAccount: InstagramAccount = {
+  id: 'not-connected',
+  workspaceId: '',
+  metaIgUserId: '',
+  username: 'not-connected',
+  displayName: 'اکانت اینستاگرام متصل نیست',
+  accountType: 'BUSINESS',
+  authMode: 'instagram_login',
+  graphHost: 'graph.instagram.com',
+  graphVersion: 'v20.0',
+  grantedScopes: [],
+  status: 'disconnected',
+  webhookStatus: 'pending',
+  tokenExpiresAt: '1970-01-01T00:00:00.000Z',
+  lastWebhookAt: '1970-01-01T00:00:00.000Z',
+  lastTokenCheckAt: '1970-01-01T00:00:00.000Z',
+  createdAt: '1970-01-01T00:00:00.000Z',
+};
+
+function formatDate(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) || date.getFullYear() === 1970 ? '—' : date.toLocaleDateString('fa-IR');
+}
+
 export const InstagramAccountsView: React.FC<InstagramAccountsViewProps> = ({
   instagramAccount: instagramAccountInput,
   onReauthorize,
   onStartOAuth,
 }) => {
-  const instagramAccount = instagramAccountInput ?? ({
-    id: 'not-connected',
-    workspaceId: '',
-    metaIgUserId: '',
-    username: 'not-connected',
-    displayName: 'Instagram متصل نیست',
-    accountType: 'BUSINESS',
-    authMode: 'instagram_login',
-    graphHost: 'graph.instagram.com',
-    graphVersion: 'v20.0',
-    grantedScopes: [],
-    status: 'disconnected',
-    webhookStatus: 'pending',
-    tokenExpiresAt: '1970-01-01T00:00:00.000Z',
-    lastWebhookAt: '1970-01-01T00:00:00.000Z',
-    lastTokenCheckAt: '1970-01-01T00:00:00.000Z',
-    createdAt: '1970-01-01T00:00:00.000Z',
-  } as InstagramAccount);
-  const [showOAuthModal, setShowOAuthModal] = useState<boolean>(false);
-  const [oauthStep, setOauthStep] = useState<number>(1);
-  const [checking, setChecking] = useState<boolean>(false);
+  const instagramAccount = instagramAccountInput ?? fallbackAccount;
+  const [showOAuthModal, setShowOAuthModal] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState('');
 
-  const handleSimulateOAuthComplete = async () => {
-    setChecking(true);
-    try {
-      await onReauthorize();
-      setShowOAuthModal(false);
-      setOauthStep(1);
-    } finally {
-      setChecking(false);
-    }
-  };
+  const isConnected = instagramAccount.status === 'connected';
+  const webhookIsActive = instagramAccount.webhookStatus === 'active';
+  const statusLabel = isConnected ? 'متصل' : instagramAccount.status === 'reauth_required' ? 'نیازمند اتصال مجدد' : 'متصل نیست';
 
   const handleStartOAuth = async () => {
     setChecking(true);
+    setError('');
     try {
       const authorizationUrl = await onStartOAuth();
+      if (!authorizationUrl || !/^https:\/\/(?:www\.)?instagram\.com\/oauth\//.test(authorizationUrl)) {
+        throw new Error('لینک اتصال رسمی اینستاگرام نامعتبر است. تنظیمات OAuth را بررسی کنید.');
+      }
       window.location.assign(authorizationUrl);
+    } catch (oauthError) {
+      setError(oauthError instanceof Error ? oauthError.message : 'شروع اتصال اینستاگرام ناموفق بود.');
+      setChecking(false);
+    }
+  };
+
+  const handleVerify = async () => {
+    setChecking(true);
+    setError('');
+    try {
+      await onReauthorize();
+    } catch (verifyError) {
+      setError(verifyError instanceof Error ? verifyError.message : 'بررسی توکن ناموفق بود.');
     } finally {
       setChecking(false);
     }
   };
 
-  const isConnected = instagramAccount.status === 'connected';
-  const statusLabel = isConnected ? 'متصل (Connected)' : instagramAccount.status === 'reauth_required' ? 'نیازمند اتصال مجدد' : 'قطع شده';
-  const webhookIsActive = instagramAccount.webhookStatus === 'active';
-
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="bg-gradient-to-r from-slate-900 via-purple-950/30 to-slate-900 border border-slate-800 p-6 rounded-2xl">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-center space-x-3 space-x-reverse">
-            <div className="p-3 bg-gradient-to-tr from-pink-600 to-purple-600 rounded-2xl text-white shadow-lg">
-              <Instagram className="w-6 h-6" />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-white tracking-tight">
-                اتصال حساب‌های اینستاگرام (Meta Business Login)
-              </h1>
-              <p className="text-xs text-slate-400 mt-1">
-                اتصال امن حساب‌های Instagram Professional فقط از طریق OAuth رسمی Meta بدون دریافت رمز عبور.
-              </p>
-            </div>
+    <div className="direct-account-view" dir="rtl">
+      <header className="direct-account-header">
+        <div className="direct-account-title-wrap">
+          <span className="direct-account-icon"><Instagram size={22} /></span>
+          <div>
+            <span className="direct-eyebrow">اتصال رسمی Meta</span>
+            <h2>اتصال به اینستاگرام</h2>
+            <p>اکانت حرفه‌ای خود را در چند مرحله و بدون واردکردن رمز عبور به InstaFlow وصل کنید.</p>
+          </div>
+        </div>
+        <button type="button" className="btn direct-account-primary" onClick={() => setShowOAuthModal(true)}>
+          <KeyRound size={16} /> اتصال اکانت جدید
+        </button>
+      </header>
+
+      <section className="direct-account-layout">
+        <article className="direct-connection-guide direct-panel">
+          <div className="direct-guide-heading">
+            <div><span className="direct-eyebrow">راهنمای اتصال</span><h3>در چهار مرحله آماده شوید</h3></div>
+            <span className="direct-guide-progress"><i /><i /><i /><i /></span>
           </div>
 
-          <button
-            onClick={() => setShowOAuthModal(true)}
-            className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold text-xs transition shadow-md shadow-purple-900/30 flex items-center space-x-1.5 space-x-reverse"
-          >
-            <Key className="w-4 h-4" />
-            <span>اتصال حساب جدید / تمدید Token</span>
+          <div className="direct-connection-steps">
+            <div className="direct-connection-step"><span>۱</span><div><strong>در اینستاگرام لاگین کنید</strong><p>در یک تب جدید وارد instagram.com شوید و با اکانت حرفه‌ای خود وارد شوید.</p></div></div>
+            <div className="direct-connection-step"><span>۲</span><div><strong>روی «اتصال اکانت» کلیک کنید</strong><p>به صفحه اتصال برگردید و دکمه اتصال اکانت را انتخاب کنید.</p></div></div>
+            <div className="direct-connection-step"><span>۳</span><div><strong>مجوزهای Meta را تأیید کنید</strong><p>مجوزهای لازم برای پروفایل، کامنت و دایرکت را بررسی و روی Allow بزنید.</p></div></div>
+            <div className="direct-connection-step"><span>۴</span><div><strong>تمام!</strong><p>پس از بازگشت، سلامت Webhook و زمان انقضای توکن بررسی می‌شود.</p></div></div>
+          </div>
+
+          <button type="button" className="btn direct-account-wide-btn" onClick={() => setShowOAuthModal(true)}>
+            رفتن به اتصال اکانت <ArrowRight size={16} />
           </button>
-        </div>
-      </div>
+          <div className="direct-account-note"><ShieldCheck size={16} /><span>این اتصال از OAuth رسمی Meta استفاده می‌کند؛ InstaFlow هیچ‌وقت رمز اینستاگرام شما را دریافت یا ذخیره نمی‌کند.</span></div>
+        </article>
 
-      {/* Connected Account Card */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-5">
-          <div className="flex items-center space-x-4 space-x-reverse">
-            <img
-              src={instagramAccount.profilePicUrl || 'https://images.unsplash.com/photo-1611262588024-d12430b98920?auto=format&fit=crop&w=200&q=80'}
-              alt={instagramAccount.username}
-              className="w-14 h-14 rounded-full object-cover ring-4 ring-purple-500/20"
-              referrerPolicy="no-referrer"
-            />
-            <div>
-              <div className="flex items-center space-x-2 space-x-reverse">
-                <h2 className="text-base font-bold text-white">{instagramAccount.displayName}</h2>
-                <span className="text-xs text-slate-400 font-mono">@{instagramAccount.username}</span>
-                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${isConnected ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-300 border-rose-500/20'}`}>
-                  {statusLabel}
-                </span>
-              </div>
-              <p className="text-xs text-slate-400 mt-1">
-                نوع حساب: <strong className="text-slate-200">Instagram Business</strong> • Graph API: <span className="font-mono text-purple-400">v20.0</span>
-              </p>
-            </div>
+        <aside className="direct-account-status-card direct-panel">
+          <div className="direct-account-status-heading"><span className="direct-eyebrow">اکانت فعلی</span><span className={`direct-account-status ${isConnected ? 'is-connected' : 'is-warning'}`}><i />{statusLabel}</span></div>
+          <div className="direct-account-profile">
+            {instagramAccount.profilePicUrl ? <img src={instagramAccount.profilePicUrl} alt={instagramAccount.username} referrerPolicy="no-referrer" /> : <span className="direct-account-avatar-fallback"><Instagram size={22} /></span>}
+            <div><strong>{instagramAccount.displayName}</strong><span dir="ltr">@{instagramAccount.username}</span><small>{instagramAccount.accountType === 'BUSINESS' ? 'Instagram Business' : 'Instagram Creator'}</small></div>
           </div>
-
-          <div className="flex items-center space-x-2 space-x-reverse text-xs">
-            <button
-              onClick={() => setShowOAuthModal(true)}
-              className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 transition border border-slate-700 font-medium"
-            >
-              بررسی Token
-            </button>
+          <div className="direct-account-health-list">
+            <div><span><Webhook size={15} /> وضعیت Webhook</span><strong className={webhookIsActive ? 'is-ok' : 'is-warning'}>{webhookIsActive ? 'فعال و ثبت‌شده' : 'نیازمند بررسی'}</strong></div>
+            <div><span><KeyRound size={15} /> انقضای Access Token</span><strong>{formatDate(instagramAccount.tokenExpiresAt)}</strong></div>
+            <div><span><RefreshCw size={15} /> آخرین بررسی سلامت</span><strong>{formatDate(instagramAccount.lastTokenCheckAt)}</strong></div>
           </div>
-        </div>
+          <button type="button" className="btn direct-account-check-btn" onClick={handleVerify} disabled={checking}><RefreshCw size={15} /> {checking ? 'در حال بررسی...' : 'بررسی اتصال و توکن'}</button>
+        </aside>
+      </section>
 
-        {!isConnected && (
-          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-xs text-rose-100">
-            <div className="flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 text-rose-300 shrink-0 mt-0.5" />
-              <div>
-                <p className="font-bold">دسترسی Meta مسدود یا منقضی شده است.</p>
-                <p className="mt-1 text-rose-200/80">یک Access Token تازه از Meta بگیرید و سپس دوباره «بررسی Token» را اجرا کنید.</p>
-              </div>
-            </div>
-          </div>
-        )}
+      <section className="direct-panel direct-scope-panel">
+        <div className="direct-guide-heading"><div><span className="direct-eyebrow">دسترسی‌های موردنیاز</span><h3>مجوزهایی که در Meta تأیید می‌شوند</h3></div><CheckCircle2 size={20} className="direct-scope-check" /></div>
+        <div className="direct-scope-grid">{requestedScopes.map(([scope, label]) => <div className="direct-scope-item" key={scope}><Check size={14} /><div><strong>{label}</strong><code>{scope}</code></div></div>)}</div>
+      </section>
 
-        {/* Granted Scopes List */}
-        <div>
-          <h3 className="text-xs font-bold text-slate-300 mb-3 flex items-center space-x-1.5 space-x-reverse">
-            <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span>مجوزهای رسمی اعطا شده (Granted OAuth Scopes)</span>
-          </h3>
+      {error && <div className="alert alert-danger direct-account-alert" role="alert"><CircleAlert size={16} /> {error}</div>}
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            {instagramAccount.grantedScopes.map((scope, i) => (
-              <div
-                key={i}
-                className="bg-slate-950 p-3 rounded-xl border border-slate-800/80 flex items-center space-x-2.5 space-x-reverse"
-              >
-                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span className="text-xs text-slate-300 font-mono truncate">{scope}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Status Highlights Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
-          <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-1">
-            <span className="text-slate-400 block text-[11px]">وضعیت Webhook Ingress</span>
-            <span className={`${webhookIsActive ? 'text-emerald-400' : 'text-rose-300'} font-bold flex items-center space-x-1 space-x-reverse`}>
-              <span className={`w-2 h-2 rounded-full ${webhookIsActive ? 'bg-emerald-400 animate-ping' : 'bg-rose-400'}`} />
-              <span>{webhookIsActive ? 'فعال و ثبت شده در Meta' : 'نیازمند بررسی مجدد'}</span>
-            </span>
-          </div>
-
-          <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-1">
-            <span className="text-slate-400 block text-[11px]">انقضای Access Token</span>
-            <span className="text-slate-200 font-bold font-mono">
-              {new Date(instagramAccount.tokenExpiresAt).toLocaleDateString('fa-IR')}
-            </span>
-          </div>
-
-          <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-1">
-            <span className="text-slate-400 block text-[11px]">آخرین بررسی سلامت</span>
-            <span className="text-slate-200 font-bold font-mono">
-              {new Date(instagramAccount.lastTokenCheckAt).toLocaleTimeString('fa-IR')}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* Meta Business Login OAuth Modal Simulator */}
-      {showOAuthModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 relative">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center space-x-2 space-x-reverse">
-                <Instagram className="w-5 h-5 text-pink-500" />
-                <span className="font-bold text-white text-sm">Business Login for Instagram</span>
-              </div>
-              <button
-                onClick={() => setShowOAuthModal(false)}
-                className="text-slate-400 hover:text-white text-xs font-bold"
-              >
-                ✕
-              </button>
-            </div>
-
-            {oauthStep === 1 && (
-              <div className="space-y-4 text-xs">
-                <p className="text-slate-300">
-                  شما در حال اتصال حساب اینستاگرام خود از طریق درگاه رسمی Meta هستید.
-                </p>
-
-                <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-2">
-                  <span className="text-slate-400 font-bold block">دسترسی‌های درخواستی:</span>
-                  <ul className="space-y-1.5 text-slate-300 list-disc list-inside">
-                    <li><code className="text-purple-400">instagram_business_basic</code> - خواندن مشخصات پیج</li>
-                    <li><code className="text-purple-400">instagram_business_manage_messages</code> - ارسال و دریافت دایرکت</li>
-                    <li><code className="text-purple-400">instagram_business_manage_comments</code> - پاسخ به کامنت‌ها</li>
-                  </ul>
-                </div>
-
-                <button
-                  onClick={handleStartOAuth}
-                  disabled={checking}
-                  className="w-full py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold transition"
-                >
-                  تایید و اعطای مجوزها در Meta
-                </button>
-              </div>
-            )}
-
-            {oauthStep === 2 && (
-              <div className="space-y-4 text-xs text-center py-4">
-                <RefreshCw className="w-8 h-8 text-purple-400 animate-spin mx-auto" />
-                <p className="text-white font-bold">در حال دریافت Long-Lived Access Token و ثبت Webhook...</p>
-
-                <button
-                  onClick={handleSimulateOAuthComplete}
-                  disabled={checking}
-                  className="px-6 py-2 rounded-xl bg-emerald-600 text-white font-bold transition"
-                >
-                  تکمیل اتصال
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {showOAuthModal && <div className="direct-account-modal-backdrop" role="presentation"><div className="direct-account-modal" role="dialog" aria-modal="true" aria-labelledby="oauth-title">
+        <div className="direct-account-modal-header"><div><span className="direct-eyebrow">اتصال امن</span><h3 id="oauth-title">آماده اتصال به اینستاگرام هستید؟</h3></div><button type="button" onClick={() => setShowOAuthModal(false)} aria-label="بستن"><X size={18} /></button></div>
+        <p className="direct-account-modal-copy">با انتخاب ادامه، به صفحه رسمی Instagram منتقل می‌شوید. رمز عبور در اختیار InstaFlow قرار نمی‌گیرد.</p>
+        <div className="direct-modal-scope-list">{requestedScopes.map(([scope, label]) => <div key={scope}><CheckCircle2 size={15} /><span>{label}</span></div>)}</div>
+        <div className="direct-account-modal-actions"><button type="button" className="btn direct-account-cancel" onClick={() => setShowOAuthModal(false)}>انصراف</button><button type="button" className="btn direct-account-primary" onClick={handleStartOAuth} disabled={checking}>{checking ? 'در حال انتقال...' : 'ادامه در Instagram'} <ExternalLink size={15} /></button></div>
+      </div></div>}
     </div>
   );
 };

@@ -43,6 +43,17 @@ export interface InstagramAccount {
   createdAt: string;
 }
 
+export interface InstagramMedia {
+  id: string;
+  caption?: string;
+  mediaType: 'IMAGE' | 'VIDEO' | 'CAROUSEL_ALBUM' | 'UNKNOWN';
+  mediaProductType?: 'FEED' | 'REELS' | 'STORY' | 'UNKNOWN';
+  mediaUrl?: string;
+  thumbnailUrl?: string;
+  permalink?: string;
+  timestamp?: string;
+}
+
 export interface Contact {
   id: string;
   workspaceId: string;
@@ -145,8 +156,11 @@ export interface FlowNode {
     keywords?: string[];
     matchMode?: 'exact' | 'contains' | 'starts_with' | 'regex';
     mediaId?: string;
+    mediaUrl?: string;
+    mediaType?: 'image' | 'video' | 'audio';
     text?: string;
     quickReplies?: Array<{ title: string; payload: string }>;
+    buttons?: Array<{ title: string; url?: string; payload?: string }>;
     publicReplyText?: string;
     formFieldKey?: string;
     formFieldPrompt?: string;

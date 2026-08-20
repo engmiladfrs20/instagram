@@ -1,27 +1,68 @@
-import React, { useEffect, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
-  Workflow,
-  Plus,
-  Play,
-  Pause,
-  CheckCircle2,
-  AlertTriangle,
-  Send,
-  MessageSquare,
-  Tag,
-  FormInput,
-  ShoppingBag,
-  Sparkles,
-  Save,
+  ArrowLeft,
   Check,
-  Zap,
+  ChevronDown,
+  CircleHelp,
+  Clock3,
+  FileText,
+  Filter,
+  Image as ImageIcon,
+  Link2,
+  MessageCircle,
+  MessageSquareText,
+  Plus,
+  Search,
+  Send,
+  Settings2,
+  Sparkles,
   Trash2,
-  ListPlus,
-  Edit2,
-  HelpCircle,
+  UsersRound,
+  WandSparkles,
+  X,
+  Zap,
 } from 'lucide-react';
-import { Automation, FlowNode, FlowEdge, NodeType } from '../types';
+import { Automation, FlowEdge, FlowNode, FormField, TriggerType } from '../types';
 import { ResponsivePreview } from './ResponsivePreview';
+
+type StudioKind = 'dm' | 'comment' | 'form' | 'followup';
+type MatchMode = 'exact' | 'contains' | 'starts_with' | 'regex';
+type CommentDestination = 'dm' | 'comment' | 'both';
+type RepeatPolicy = 'keep_all' | 'limit' | 'replace';
+
+interface FormQuestionDraft {
+  id: string;
+  label: string;
+  prompt: string;
+  fieldType: FormField['fieldType'];
+  required: boolean;
+}
+
+interface StudioDraft {
+  name: string;
+  description: string;
+  keywords: string[];
+  matchMode: MatchMode;
+  message: string;
+  variants: string[];
+  publicVariants: string[];
+  postScope: 'all' | 'selected' | 'live';
+  postIds: string[];
+  destination: CommentDestination;
+  requireFollow: boolean;
+  linkMessage: boolean;
+  storyReplyOnly: boolean;
+  repeatPolicy: RepeatPolicy;
+  repeatLimit: number;
+  formTitle: string;
+  formExitLabel: string;
+  formCompletionMessage: string;
+  questions: FormQuestionDraft[];
+  followUpAutomationId: string;
+  followUpCondition: 'always' | 'no_reply';
+  delayMinutes: number;
+  followUpMessage: string;
+}
 
 interface AutomationsViewProps {
   automations: Automation[];
@@ -30,644 +71,470 @@ interface AutomationsViewProps {
   onCreateAutomation: () => Promise<Automation>;
 }
 
+interface DemoPost {
+  id: string;
+  title: string;
+  image: string;
+  meta: string;
+}
+
+const DEMO_POSTS: DemoPost[] = [
+  { id: '17891122334455', title: 'مانتوی کتان تابستانه', meta: 'پست · ۲ روز پیش', image: 'https://images.unsplash.com/photo-1551488831-00ddcb6c6bd3?auto=format&fit=crop&w=420&q=80' },
+  { id: '17891122334456', title: 'رنگ‌بندی جدید', meta: 'ریلز · ۵ روز پیش', image: 'https://images.unsplash.com/photo-1490481651871-ab68de25d43d?auto=format&fit=crop&w=420&q=80' },
+  { id: '17891122334457', title: 'استایل روزمره', meta: 'پست · هفتهٔ قبل', image: 'https://images.unsplash.com/photo-1483985988355-763728e1935b?auto=format&fit=crop&w=420&q=80' },
+];
+
+const kindLabels: Record<StudioKind, string> = {
+  dm: 'پاسخ دایرکت',
+  comment: 'پاسخ کامنت',
+  form: 'فرم دایرکت',
+  followup: 'پیگیری خودکار',
+};
+
+const kindDescriptions: Record<StudioKind, string> = {
+  dm: 'وقتی پیام مشخصی دریافت شد، پاسخ متنی یا چندرسانه‌ای ارسال کن.',
+  comment: 'پست را انتخاب کن و پاسخ عمومی، دایرکت یا هر دو را بساز.',
+  form: 'اطلاعات مخاطب را مرحله‌به‌مرحله و بدون سردرگمی دریافت کن.',
+  followup: 'اگر گفتگو بی‌پاسخ ماند، با فاصلهٔ زمانی مناسب پیگیری کن.',
+};
+
+const kindIcon: Record<StudioKind, React.ComponentType<{ size?: number; strokeWidth?: number }>> = {
+  dm: Send,
+  comment: MessageSquareText,
+  form: FileText,
+  followup: Clock3,
+};
+
+const makeQuestion = (index: number): FormQuestionDraft => ({
+  id: `question_${Date.now()}_${index}`,
+  label: index === 0 ? 'نام و نام خانوادگی' : 'شماره تماس',
+  prompt: index === 0 ? 'لطفاً نام و نام خانوادگی‌تان را وارد کنید.' : 'شماره تماس خود را وارد کنید.',
+  fieldType: index === 0 ? 'text' : 'phone',
+  required: true,
+});
+
+const defaultDraft = (kind: StudioKind): StudioDraft => ({
+  name: kindLabels[kind],
+  description: kindDescriptions[kind],
+  keywords: kind === 'comment' ? ['قیمت', 'لینک'] : kind === 'followup' ? [] : ['سلام'],
+  matchMode: 'contains',
+  message: kind === 'comment' ? 'سلام! جزئیات کامل و لینک برای شما ارسال شد.' : 'سلام! پیام شما دریافت شد. چطور می‌توانیم راهنمایی‌تان کنیم؟',
+  variants: kind === 'comment' ? ['سلام! جزئیات کامل و لینک برای شما ارسال شد.', 'مرسی از کامنتت! اطلاعات کامل در دایرکت برایت ارسال شد.'] : ['سلام! پیام شما دریافت شد. چطور می‌توانیم راهنمایی‌تان کنیم؟'],
+  publicVariants: ['سلام! جزئیات در دایرکت برای شما ارسال شد.'],
+  postScope: 'all',
+  postIds: [],
+  destination: 'both',
+  requireFollow: false,
+  linkMessage: false,
+  storyReplyOnly: false,
+  repeatPolicy: 'keep_all',
+  repeatLimit: 3,
+  formTitle: 'ثبت سفارش سریع',
+  formExitLabel: 'انصراف',
+  formCompletionMessage: 'اطلاعات شما با موفقیت ثبت شد؛ همکاران ما به‌زودی با شما تماس می‌گیرند.',
+  questions: [makeQuestion(0), makeQuestion(1)],
+  followUpAutomationId: '',
+  followUpCondition: 'no_reply',
+  delayMinutes: 60,
+  followUpMessage: 'سلام! اگر هنوز به راهنمایی نیاز دارید، من در خدمتم.',
+});
+
+const inferKind = (automation: Automation): StudioKind => {
+  const nodes = automation.currentVersion?.nodes || [];
+  if (nodes.some((node) => node.type === 'WAIT' || node.config.followUpCondition)) return 'followup';
+  if (nodes.some((node) => node.type === 'ASK_FORM_FIELD')) return 'form';
+  if (automation.triggerType.includes('COMMENT') || nodes.some((node) => node.type === 'REPLY_PUBLIC_COMMENT')) return 'comment';
+  return 'dm';
+};
+
+const draftFromAutomation = (automation: Automation): StudioDraft => {
+  const kind = inferKind(automation);
+  const draft = defaultDraft(kind);
+  const nodes = automation.currentVersion?.nodes || [];
+  const trigger = nodes.find((node) => node.type === 'TRIGGER');
+  const privateNode = nodes.find((node) => node.type === 'SEND_PRIVATE_REPLY' || node.type === 'SEND_TEXT' || node.type === 'SEND_QUICK_REPLIES');
+  const publicNode = nodes.find((node) => node.type === 'REPLY_PUBLIC_COMMENT');
+  const questionNodes = nodes.filter((node) => node.type === 'ASK_FORM_FIELD');
+  const destination = publicNode && privateNode ? 'both' : publicNode ? 'comment' : 'dm';
+  const privateVariants = privateNode?.config.responseVariants?.filter(Boolean) || [];
+  const publicVariants = publicNode?.config.publicResponseVariants?.filter(Boolean) || [];
+
+  return {
+    ...draft,
+    name: automation.name,
+    description: automation.description || draft.description,
+    keywords: trigger?.config.keywords?.length ? trigger.config.keywords : automation.keywords,
+    matchMode: trigger?.config.matchMode || draft.matchMode,
+    message: privateNode?.config.text || publicNode?.config.publicReplyText || draft.message,
+    variants: privateVariants.length ? privateVariants : [privateNode?.config.text || draft.message],
+    publicVariants: publicVariants.length ? publicVariants : [publicNode?.config.publicReplyText || draft.publicVariants[0]],
+    postScope: trigger?.config.postScope || draft.postScope,
+    postIds: trigger?.config.postIds || draft.postIds,
+    destination,
+    requireFollow: Boolean(trigger?.config.requireFollow),
+    linkMessage: Boolean(trigger?.config.linkMessage),
+    storyReplyOnly: Boolean(trigger?.config.storyReplyOnly),
+    repeatPolicy: trigger?.config.repeatPolicy || draft.repeatPolicy,
+    repeatLimit: trigger?.config.repeatLimit || draft.repeatLimit,
+    questions: questionNodes.length
+      ? questionNodes.map((node, index) => ({
+          id: node.id,
+          label: node.config.formFieldKey || `سؤال ${index + 1}`,
+          prompt: node.config.formFieldPrompt || '',
+          fieldType: node.config.formFieldType || 'text',
+          required: true,
+        }))
+      : draft.questions,
+    followUpAutomationId: trigger?.config.followUpAutomationId || '',
+    followUpCondition: trigger?.config.followUpCondition || draft.followUpCondition,
+    delayMinutes: nodes.find((node) => node.type === 'WAIT')?.config.delayMinutes || draft.delayMinutes,
+    followUpMessage: privateNode?.config.text || draft.followUpMessage,
+    formTitle: privateNode?.config.text || draft.formTitle,
+  };
+};
+
+const makeNode = (id: string, type: FlowNode['type'], title: string, config: FlowNode['config'], position: number): FlowNode => ({
+  id,
+  type,
+  title,
+  config,
+  position: { x: 80 + position * 250, y: 120 },
+});
+
+const buildNodes = (kind: StudioKind, draft: StudioDraft): { nodes: FlowNode[]; edges: FlowEdge[]; triggerType: TriggerType } => {
+  const triggerType: TriggerType = kind === 'comment'
+    ? 'COMMENT_KEYWORD'
+    : kind === 'form' || kind === 'dm'
+      ? (draft.storyReplyOnly ? 'STORY_REPLY' : 'DM_KEYWORD')
+      : 'DM_RECEIVED';
+  const trigger = makeNode('node_trigger', 'TRIGGER', 'شروع سناریو', {
+    triggerType,
+    keywords: draft.keywords,
+    matchMode: draft.matchMode,
+    postScope: draft.postScope,
+    postIds: draft.postIds,
+    requireFollow: draft.requireFollow,
+    linkMessage: draft.linkMessage,
+    storyReplyOnly: draft.storyReplyOnly,
+    repeatPolicy: draft.repeatPolicy,
+    repeatLimit: draft.repeatLimit,
+    followUpAutomationId: draft.followUpAutomationId,
+    followUpCondition: draft.followUpCondition,
+  }, 0);
+  const nodes: FlowNode[] = [trigger];
+  const edges: FlowEdge[] = [];
+  const connect = (node: FlowNode, label?: string) => {
+    nodes.push(node);
+    edges.push({ id: `edge_${nodes.length}`, sourceNodeId: nodes[nodes.length - 2].id, targetNodeId: node.id, label });
+  };
+
+  if (kind === 'comment' && (draft.destination === 'comment' || draft.destination === 'both')) {
+    connect(makeNode('node_public_reply', 'REPLY_PUBLIC_COMMENT', 'پاسخ عمومی زیر کامنت', {
+      publicReplyText: draft.publicVariants[0] || '',
+      publicResponseVariants: draft.publicVariants,
+      commentReplyDestination: draft.destination,
+    }, 1), 'پاسخ عمومی');
+  }
+
+  if (kind === 'form') {
+    draft.questions.forEach((question, index) => connect(makeNode(`node_question_${index}`, 'ASK_FORM_FIELD', question.label, {
+      formFieldKey: question.label,
+      formFieldPrompt: question.prompt,
+      formFieldType: question.fieldType,
+    }, index + 1), `سؤال ${index + 1}`));
+    connect(makeNode('node_form_complete', 'SEND_TEXT', 'پیام تکمیل فرم', { text: draft.formCompletionMessage }, draft.questions.length + 1), 'تکمیل');
+  } else if (kind === 'followup') {
+    connect(makeNode('node_followup_wait', 'WAIT', 'انتظار برای پیگیری', {
+      delayMinutes: draft.delayMinutes,
+      followUpCondition: draft.followUpCondition,
+      followUpAutomationId: draft.followUpAutomationId,
+    }, 1));
+    connect(makeNode('node_followup_message', 'SEND_PRIVATE_REPLY', 'ارسال پیام پیگیری', {
+      text: draft.followUpMessage,
+      responseVariants: draft.variants,
+    }, 2));
+  } else if (kind === 'comment' && (draft.destination === 'dm' || draft.destination === 'both')) {
+    connect(makeNode('node_private_reply', 'SEND_PRIVATE_REPLY', 'پاسخ خصوصی در دایرکت', {
+      text: draft.message,
+      responseVariants: draft.variants,
+      quickReplies: [],
+    }, 2), 'دایرکت');
+  } else if (kind === 'dm') {
+    connect(makeNode('node_private_reply', 'SEND_PRIVATE_REPLY', 'ارسال پاسخ دایرکت', {
+      text: draft.message,
+      responseVariants: draft.variants,
+      quickReplies: [],
+      linkMessage: draft.linkMessage,
+    }, 1), 'پاسخ');
+  }
+  return { nodes, edges, triggerType };
+};
+
+const updateAutomation = (automation: Automation, kind: StudioKind, draft: StudioDraft): Automation => {
+  const built = buildNodes(kind, draft);
+  const now = new Date().toISOString();
+  return {
+    ...automation,
+    name: draft.name.trim() || kindLabels[kind],
+    description: draft.description.trim(),
+    triggerType: built.triggerType,
+    keywords: draft.keywords,
+    updatedAt: now,
+    currentVersion: {
+      ...automation.currentVersion,
+      nodes: built.nodes,
+      edges: built.edges,
+      validationResult: { valid: true, errors: [], warnings: [] },
+      createdAt: now,
+    },
+  };
+};
+
+const getKindCount = (automations: Automation[], kind: StudioKind) => automations.filter((auto) => inferKind(auto) === kind).length;
+
 export const AutomationsView: React.FC<AutomationsViewProps> = ({
   automations,
   onSaveAutomation,
   onPublishAutomation,
   onCreateAutomation,
 }) => {
-  const [selectedAutoId, setSelectedAutoId] = useState<string>(
-    automations[0]?.id || ''
-  );
-  const [isBuilding, setIsBuilding] = useState<boolean>(false);
-  const [testLog, setTestLog] = useState<string[]>([]);
-  const [testCommentText, setTestCommentText] = useState<string>('قیمت مانتو چنده؟');
+  const [selectedAutoId, setSelectedAutoId] = useState(automations[0]?.id || '');
+  const [isBuilding, setIsBuilding] = useState(false);
+  const [studioKind, setStudioKind] = useState<StudioKind>(automations[0] ? inferKind(automations[0]) : 'dm');
+  const [draft, setDraft] = useState<StudioDraft>(() => automations[0] ? draftFromAutomation(automations[0]) : defaultDraft('dm'));
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<'all' | StudioKind>('all');
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<string[]>([]);
+  const [error, setError] = useState('');
 
-  const selectedAuto = automations.find((a) => a.id === selectedAutoId) || automations[0];
+  const selectedAuto = automations.find((auto) => auto.id === selectedAutoId);
+  const filteredAutomations = useMemo(() => automations.filter((auto) => {
+    const matchesType = filter === 'all' || inferKind(auto) === filter;
+    const haystack = `${auto.name} ${auto.description || ''} ${auto.keywords.join(' ')}`.toLocaleLowerCase('fa-IR');
+    return matchesType && haystack.includes(search.trim().toLocaleLowerCase('fa-IR'));
+  }), [automations, filter, search]);
 
-  const [nodes, setNodes] = useState<FlowNode[]>(
-    selectedAuto?.currentVersion?.nodes || []
-  );
-  const [edges, setEdges] = useState<FlowEdge[]>(
-    selectedAuto?.currentVersion?.edges || []
-  );
-  const [selectedNodeId, setSelectedNodeId] = useState<string>('node_trig_1');
-
-  useEffect(() => {
-    const auto = automations.find((item) => item.id === selectedAutoId) || automations[0];
-    if (!auto) return;
-    if (!selectedAutoId) setSelectedAutoId(auto.id);
-    if (nodes.length === 0) {
-      setNodes(auto.currentVersion.nodes);
-      setEdges(auto.currentVersion.edges);
-      setSelectedNodeId(auto.currentVersion.nodes[0]?.id || '');
-    }
-  }, [automations, selectedAutoId, nodes.length]);
-
-  // Sync node changes if automation selection switches
-  const handleSelectAuto = (auto: Automation) => {
-    setSelectedAutoId(auto.id);
-    setNodes(auto.currentVersion.nodes);
-    setEdges(auto.currentVersion.edges);
-    setSelectedNodeId(auto.currentVersion.nodes[0]?.id || '');
-    setTestLog([]);
-  };
-
-  const selectedNode = nodes.find((n) => n.id === selectedNodeId);
-
-  // Policy Guard Check for Current Graph
-  const validateGraph = () => {
-    const errors: string[] = [];
-    const warnings: string[] = [];
-
-    const privReplyNodes = nodes.filter((n) => n.type === 'SEND_PRIVATE_REPLY');
-    privReplyNodes.forEach((node) => {
-      if (node.config.quickReplies && node.config.quickReplies.length > 13) {
-        errors.push(`گره "${node.title}": تعداد دکمه‌های Quick Reply نباید بیشتر از ۱۳ عدد باشد (فعلی: ${node.config.quickReplies.length}).`);
-      }
-    });
-
-    if (nodes.length < 2) {
-      warnings.push('سناریو حداقل نیاز به یک محرک (Trigger) و یک اکشن (Action) دارد.');
-    }
-
-    return { valid: errors.length === 0, errors, warnings };
-  };
-
-  const validation = validateGraph();
-
-  // Handle Node Update in State
-  const updateSelectedNodeConfig = (key: string, value: any) => {
-    setNodes((prev) =>
-      prev.map((n) => {
-        if (n.id === selectedNodeId) {
-          return {
-            ...n,
-            config: {
-              ...n.config,
-              [key]: value,
-            },
-          };
-        }
-        return n;
-      })
-    );
-  };
-
-  // Add Quick Reply item
-  const addQuickReply = () => {
-    if (!selectedNode) return;
-    const currentQRs = selectedNode.config.quickReplies || [];
-    if (currentQRs.length >= 13) return;
-
-    const newQR = {
-      title: `گزینه ${currentQRs.length + 1}`,
-      payload: `ACTION_QR_${Date.now()}`,
-    };
-    updateSelectedNodeConfig('quickReplies', [...currentQRs, newQR]);
-  };
-
-  const removeQuickReply = (idx: number) => {
-    if (!selectedNode) return;
-    const currentQRs = selectedNode.config.quickReplies || [];
-    updateSelectedNodeConfig(
-      'quickReplies',
-      currentQRs.filter((_, i) => i !== idx)
-    );
-  };
-
-  // Add new node to canvas
-  const handleAddNode = (type: NodeType) => {
-    const newId = `node_${type.toLowerCase()}_${Date.now()}`;
-    const titleMap: Record<NodeType, string> = {
-      TRIGGER: 'محرک کامنت/دایرکت',
-      CONDITION: 'شرایط برچسب/متن',
-      SEND_TEXT: 'ارسال پیام متنی',
-      SEND_QUICK_REPLIES: 'ارسال دکمه‌های پاسخ سریع',
-      SEND_PRIVATE_REPLY: 'ارسال پاسخ خصوصی (Private Reply)',
-      REPLY_PUBLIC_COMMENT: 'پاسخ عمومی زیر کامنت',
-      ASK_FORM_FIELD: 'دریافت پاسخ فرم',
-      SEND_PRODUCT_CAROUSEL: 'نمایش ویترین محصول',
-      ADD_TAG: 'افزودن برچسب لید',
-      SET_CONTACT_FIELD: 'تنظیم فیلد مشتری',
-      HANDOFF_TO_HUMAN: 'تحویل به اپراتور انسانی',
-      WAIT: 'تأخیر زمانی',
-      STOP: 'پایان سناریو',
-    };
-
-    const newNode: FlowNode = {
-      id: newId,
-      type,
-      title: titleMap[type] || 'گره جدید',
-      position: { x: 350, y: nodes.length * 80 + 50 },
-      config: {
-        text: type === 'SEND_PRIVATE_REPLY' ? 'پاسخ خصوصی دایرکت...' : undefined,
-        publicReplyText: type === 'REPLY_PUBLIC_COMMENT' ? 'پاسخ عمومی شما...' : undefined,
-      },
-    };
-
-    setNodes([...nodes, newNode]);
-    if (nodes.length > 0) {
-      setEdges([
-        ...edges,
-        {
-          id: `e_${Date.now()}`,
-          sourceNodeId: nodes[nodes.length - 1].id,
-          targetNodeId: newId,
-        },
-      ]);
-    }
-    setSelectedNodeId(newId);
-  };
-
-  // Run Test Simulation inside Builder
-  const handleRunSimulation = () => {
-    setTestLog([
-      '🚀 شروع شبیه‌سازی تست سناریو...',
-      `📥 دریافت کامنت تست: "${testCommentText}"`,
-      '🔍 بررسی تطابق کلمات کلیدی با Trigger...',
-    ]);
-
-    setTimeout(() => {
-      const pubReply = nodes.find((n) => n.type === 'REPLY_PUBLIC_COMMENT');
-      const privReply = nodes.find((n) => n.type === 'SEND_PRIVATE_REPLY');
-      const tagNode = nodes.find((n) => n.type === 'ADD_TAG');
-
-      const logs = [
-        '🚀 شروع شبیه‌سازی تست سناریو...',
-        `📥 دریافت کامنت تست: "${testCommentText}"`,
-        '✅ کلمه کلیدی "قیمت" منطبق گردید.',
-        '🛡️ بررسی قوانین Meta: کامنت کمتر از ۷ روز قدمت دارد (پاسخ مجاز است).',
-      ];
-
-      if (pubReply?.config?.publicReplyText) {
-        logs.push(`💬 اکشن [پاسخ عمومی]: "${pubReply.config.publicReplyText}"`);
-      }
-      if (privReply?.config?.text) {
-        logs.push(`📩 اکشن [Private Reply دایرکت]: "${privReply.config.text}"`);
-        if (privReply.config.quickReplies) {
-          logs.push(`🔘 ارسال ${privReply.config.quickReplies.length} دکمه Quick Reply.`);
-        }
-      }
-      if (tagNode?.config?.tagToAdd) {
-        logs.push(`🏷️ اکشن [افزودن برچسب]: "${tagNode.config.tagToAdd}"`);
-      }
-
-      logs.push('✨ سناریو با موفقیت اجرا شد.');
-      setTestLog(logs);
-    }, 600);
-  };
-
-  // Save changes
-  const handleSave = () => {
-    if (!selectedAuto) return;
-    const updatedAuto: Automation = {
-      ...selectedAuto,
-      currentVersion: {
-        ...selectedAuto.currentVersion,
-        nodes,
-        edges,
-      },
-    };
-    return onSaveAutomation(updatedAuto);
-  };
-
-  const handleCreate = async () => {
-    const auto = await onCreateAutomation();
-    handleSelectAuto(auto);
+  const startEditing = (automation: Automation, forcedKind?: StudioKind) => {
+    const kind = forcedKind || inferKind(automation);
+    setSelectedAutoId(automation.id);
+    setStudioKind(kind);
+    setDraft(forcedKind && forcedKind !== inferKind(automation) ? defaultDraft(forcedKind) : draftFromAutomation(automation));
+    setTestResult([]);
+    setError('');
     setIsBuilding(true);
   };
 
+  const createScenario = async (kind: StudioKind) => {
+    setSaving(true);
+    setError('');
+    try {
+      const automation = await onCreateAutomation();
+      const newDraft = defaultDraft(kind);
+      const saved = await onSaveAutomation(updateAutomation(automation, kind, newDraft));
+      const current = saved || updateAutomation(automation, kind, newDraft);
+      startEditing(current, kind);
+    } catch (creationError) {
+      setError(creationError instanceof Error ? creationError.message : 'ساخت سناریو ناموفق بود.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const saveDraft = async () => {
+    if (!selectedAuto) return;
+    if (!draft.name.trim()) {
+      setError('برای سناریو یک نام کوتاه وارد کنید.');
+      return;
+    }
+    if (studioKind !== 'followup' && draft.keywords.length === 0) {
+      setError('حداقل یک کلمهٔ فعال‌ساز اضافه کنید.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      const saved = await onSaveAutomation(updateAutomation(selectedAuto, studioKind, draft));
+      if (saved) setSelectedAutoId(saved.id);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'ذخیرهٔ پیش‌نویس ناموفق بود.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const publish = async () => {
+    await saveDraft();
+    if (selectedAuto) await onPublishAutomation(selectedAuto.id);
+  };
+
+  const runTest = () => {
+    setTesting(true);
+    setTestResult([]);
+    window.setTimeout(() => {
+      const input = draft.keywords[0] || 'سلام';
+      const output = studioKind === 'comment'
+        ? draft.destination === 'comment'
+          ? 'پاسخ عمومی زیر همان کامنت آمادهٔ ارسال است.'
+          : draft.destination === 'dm'
+            ? 'پاسخ خصوصی برای دایرکت کاربر آمادهٔ ارسال است.'
+            : 'پاسخ عمومی و پیام خصوصی هر دو آمادهٔ ارسال هستند.'
+        : studioKind === 'form'
+          ? `${draft.questions.length} سؤال به ترتیب نمایش داده می‌شود.`
+          : studioKind === 'followup'
+            ? `پیگیری پس از ${draft.delayMinutes} دقیقه در حالت شبیه‌سازی قرار گرفت.`
+            : 'پاسخ دایرکت از بین متن‌های متنوع انتخاب می‌شود.';
+      setTestResult([`ورودی تست: «${input}»`, `تطابق شرط: موفق · ${draft.matchMode}`, output, 'هیچ پیام واقعی به اینستاگرام ارسال نشد.']);
+      setTesting(false);
+    }, 450);
+  };
+
+  const updateDraft = <K extends keyof StudioDraft>(key: K, value: StudioDraft[K]) => setDraft((previous) => ({ ...previous, [key]: value }));
+
+  const addKeyword = (value: string) => {
+    const keyword = value.trim();
+    if (keyword && !draft.keywords.includes(keyword)) updateDraft('keywords', [...draft.keywords, keyword]);
+  };
+
+  const addVariant = (publicVariant = false) => {
+    const key = publicVariant ? 'publicVariants' : 'variants';
+    updateDraft(key, [...draft[key], publicVariant ? 'پاسخ عمومی جدید' : 'پاسخ متنوع جدید']);
+  };
+
+  const updateVariant = (index: number, value: string, publicVariant = false) => {
+    const key = publicVariant ? 'publicVariants' : 'variants';
+    updateDraft(key, draft[key].map((item, itemIndex) => itemIndex === index ? value : item));
+  };
+
+  const removeVariant = (index: number, publicVariant = false) => {
+    const key = publicVariant ? 'publicVariants' : 'variants';
+    const next = draft[key].filter((_, itemIndex) => itemIndex !== index);
+    updateDraft(key, next.length ? next : [publicVariant ? 'پاسخ عمومی جدید' : 'پاسخ متنوع جدید']);
+  };
+
   return (
-    <div className="space-y-6">
-      {/* Header Bar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-900 border border-slate-800 p-5 rounded-2xl">
-        <div>
-          <h1 className="text-xl font-bold text-white flex items-center space-x-2 space-x-reverse">
-            <Workflow className="w-5 h-5 text-purple-400" />
-            <span>مدیریت اتوماسیون‌ها و طراح سناریو (Flow Builder)</span>
-          </h1>
-          <p className="text-xs text-slate-400 mt-1">
-            سناریوهای پاسخ به کامنت، ارسال دایرکت خودکار و دریافت فاکتور با لینتر رعایت قوانین رسمی Meta.
-          </p>
-        </div>
-
-        <div className="flex items-center space-x-3 space-x-reverse">
-          <button
-            onClick={() => setIsBuilding(!isBuilding)}
-            className={`px-4 py-2 rounded-xl text-xs font-medium transition ${
-              isBuilding
-                ? 'bg-slate-800 text-slate-300 border border-slate-700'
-                : 'bg-purple-600 hover:bg-purple-500 text-white shadow-md shadow-purple-900/30'
-            }`}
-          >
-            {isBuilding ? 'بازگشت به لیست اتوماسیون‌ها' : 'ورود به ویرایشگر گراف Flow'}
-          </button>
-        </div>
-      </div>
-
-      {/* Main Content Area */}
+    <div className="direct-studio" dir="rtl">
       {!isBuilding ? (
-        /* Automations Table List */
-        <div className="bg-slate-900/80 border border-slate-800/80 rounded-2xl overflow-hidden shadow-xl">
-          <div className="p-4 border-b border-slate-800 flex items-center justify-between">
-            <span className="text-sm font-bold text-white">لیست اتوماسیون‌های فعال حساب</span>
-            <button
-              onClick={handleCreate}
-              className="flex items-center space-x-1.5 space-x-reverse text-xs bg-purple-600/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-lg hover:bg-purple-600/30 transition"
-            >
-              <Plus className="w-4 h-4" />
-              <span>ساخت اتوماسیون جدید</span>
-            </button>
-          </div>
-
-          <div className="divide-y divide-slate-800/80">
-            {automations.map((auto) => (
-              <div
-                key={auto.id}
-                className={`p-5 flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-slate-800/30 transition ${
-                  selectedAutoId === auto.id ? 'bg-purple-950/10' : ''
-                }`}
-              >
-                <div className="flex items-start space-x-4 space-x-reverse">
-                  <div className="p-3 bg-purple-500/10 rounded-2xl text-purple-400 mt-1">
-                    <Zap className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <div className="flex items-center space-x-3 space-x-reverse">
-                      <h3 className="text-sm font-bold text-white">{auto.name}</h3>
-                      <span
-                        className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
-                          auto.status === 'active'
-                            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                            : 'bg-slate-800 text-slate-400 border border-slate-700'
-                        }`}
-                      >
-                        {auto.status === 'active' ? 'فعال' : 'پیش‌نویس'}
-                      </span>
-                      <span className="text-[10px] text-slate-400 bg-slate-800 px-2 py-0.5 rounded font-mono">
-                        v{auto.currentVersion.versionNo}
-                      </span>
-                    </div>
-
-                    <p className="text-xs text-slate-400 mt-1">{auto.description}</p>
-
-                    <div className="flex flex-wrap items-center gap-2 mt-2">
-                      <span className="text-[11px] text-slate-400">کلمات کلیدی:</span>
-                      {auto.keywords.map((kw, i) => (
-                        <span
-                          key={i}
-                          className="px-2 py-0.5 rounded bg-slate-800/80 border border-slate-700/60 text-slate-300 text-[11px]"
-                        >
-                          {kw}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex items-center space-x-4 space-x-reverse text-xs">
-                  <div className="text-left font-mono text-slate-400">
-                    <span className="block text-slate-200 font-bold">
-                      {auto.runCount.toLocaleString('fa-IR')} اجرا
-                    </span>
-                    <span className="text-[10px]">
-                      آخرین: {auto.lastTriggeredAt ? new Date(auto.lastTriggeredAt).toLocaleTimeString('fa-IR') : 'هرگز'}
-                    </span>
-                  </div>
-
-                  <button
-                    onClick={() => {
-                      handleSelectAuto(auto);
-                      setIsBuilding(true);
-                    }}
-                    className="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium transition border border-slate-700 flex items-center space-x-1.5 space-x-reverse"
-                  >
-                    <Edit2 className="w-3.5 h-3.5" />
-                    <span>ویرایش گراف سناریو</span>
-                  </button>
-                </div>
+        <>
+          <header className="workspace-page-header direct-studio-hero">
+            <div>
+              <div className="workspace-page-kicker"><WandSparkles size={16} /> استودیو پاسخ‌گویی</div>
+              <h2>سناریوهای ساده، پاسخ‌های حرفه‌ای</h2>
+              <p>همان تجربهٔ مرحله‌ای DirectSaz را با پیش‌نمایش زنده، پاسخ‌های متنوع و کنترل کامل روی مقصد پیام‌ها در اختیار داشته باشید.</p>
+            </div>
+            <div className="workspace-page-actions">
+              <button type="button" className="btn btn-outline-secondary direct-secondary-btn" onClick={() => setFilter(filter === 'all' ? 'comment' : 'all')}><Filter size={16} /> {filter === 'all' ? 'فیلتر کامنت' : 'نمایش همه'}</button>
+              <div className="direct-create-menu">
+                <button type="button" className="btn btn-primary direct-primary-btn" onClick={() => createScenario('dm')} disabled={saving}><Plus size={17} /> ساخت سناریو <ChevronDown size={15} /></button>
+                <div className="direct-create-hint">از اینجا نوع سناریو را انتخاب کنید</div>
               </div>
-            ))}
-          </div>
-        </div>
+            </div>
+          </header>
+
+          <section className="direct-template-grid" aria-label="قالب‌های سریع">
+            {(Object.keys(kindLabels) as StudioKind[]).map((kind) => {
+              const Icon = kindIcon[kind];
+              return <button type="button" key={kind} className="direct-template-card" onClick={() => createScenario(kind)} disabled={saving}>
+                <span className="direct-template-icon"><Icon size={20} /></span>
+                <span><strong>{kindLabels[kind]}</strong><small>{kindDescriptions[kind]}</small></span>
+                <ArrowLeft size={16} />
+              </button>;
+            })}
+          </section>
+
+          <section className="surface-card direct-list-card">
+            <div className="direct-list-toolbar">
+              <div><span className="direct-eyebrow">کتابخانهٔ سناریو</span><h3>همهٔ پاسخ‌های خودکار</h3></div>
+              <label className="direct-search"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="جست‌وجوی سناریو..." aria-label="جست‌وجوی سناریو" /></label>
+            </div>
+            <div className="direct-filter-tabs" role="tablist" aria-label="فیلتر سناریو">
+              <button type="button" className={filter === 'all' ? 'is-active' : ''} onClick={() => setFilter('all')}>همه <span>{automations.length}</span></button>
+              {(Object.keys(kindLabels) as StudioKind[]).map((kind) => <button type="button" key={kind} className={filter === kind ? 'is-active' : ''} onClick={() => setFilter(kind)}>{kindLabels[kind]} <span>{getKindCount(automations, kind)}</span></button>)}
+            </div>
+            <div className="direct-scenario-list">
+              {filteredAutomations.length === 0 ? <div className="empty-state-card"><Sparkles size={30} /><strong>هنوز سناریویی با این فیلتر پیدا نشد</strong><span>از قالب‌های بالای صفحه شروع کنید؛ هر تغییر تا قبل از انتشار قابل ویرایش است.</span></div> : filteredAutomations.map((automation) => {
+                const kind = inferKind(automation);
+                const Icon = kindIcon[kind];
+                return <article className="direct-scenario-row" key={automation.id}>
+                  <span className="direct-scenario-icon"><Icon size={19} /></span>
+                  <div className="direct-scenario-copy"><div className="d-flex align-items-center gap-2 flex-wrap"><strong>{automation.name}</strong><span className={`status-chip ${automation.status === 'active' ? 'status-chip-success' : 'status-chip-muted'}`}><span className="direct-status-dot" />{automation.status === 'active' ? 'فعال' : 'پیش‌نویس'}</span></div><p>{automation.description || kindDescriptions[kind]}</p><div className="direct-scenario-meta"><span>{kindLabels[kind]}</span><span>{automation.keywords.slice(0, 3).join(' · ') || 'بدون کلمهٔ فعال‌ساز'}</span><span>{automation.runCount.toLocaleString('fa-IR')} اجرا</span></div></div>
+                  <div className="direct-scenario-actions"><button type="button" className="btn btn-outline-secondary direct-edit-btn" onClick={() => startEditing(automation)}>ویرایش</button><button type="button" className="btn btn-primary direct-edit-btn" onClick={() => startEditing(automation)}><ArrowLeft size={15} /> جزئیات</button></div>
+                </article>;
+              })}
+            </div>
+          </section>
+        </>
       ) : (
-        /* Visual Flow Builder Canvas & Inspector */
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Canvas & Node List Panel */}
-          <div className="lg:col-span-2 space-y-4">
-            {/* Action Bar */}
-            <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center space-x-2 space-x-reverse">
-                <span className="text-xs font-bold text-slate-300">افزودن گره به سناریو:</span>
-                <button
-                  onClick={() => handleAddNode('REPLY_PUBLIC_COMMENT')}
-                  className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs border border-slate-700 flex items-center space-x-1 space-x-reverse"
-                >
-                  <MessageSquare className="w-3.5 h-3.5 text-blue-400" />
-                  <span>پاسخ عمومی</span>
-                </button>
-                <button
-                  onClick={() => handleAddNode('SEND_PRIVATE_REPLY')}
-                  className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs border border-slate-700 flex items-center space-x-1 space-x-reverse"
-                >
-                  <Send className="w-3.5 h-3.5 text-purple-400" />
-                  <span>Private Reply</span>
-                </button>
-                <button
-                  onClick={() => handleAddNode('ADD_TAG')}
-                  className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs border border-slate-700 flex items-center space-x-1 space-x-reverse"
-                >
-                  <Tag className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>افزودن برچسب</span>
-                </button>
-              </div>
-
-              <div className="flex items-center space-x-2 space-x-reverse">
-                <button
-                  onClick={handleSave}
-                  className="px-3.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs border border-slate-700 font-medium flex items-center space-x-1.5 space-x-reverse"
-                >
-                  <Save className="w-3.5 h-3.5" />
-                  <span>ذخیره پیش‌نویس</span>
-                </button>
-                <button
-                  onClick={() => selectedAuto && onPublishAutomation(selectedAuto.id)}
-                  disabled={!selectedAuto || !validation.valid}
-                  className={`px-4 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1.5 space-x-reverse transition ${
-                    validation.valid
-                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-md shadow-emerald-900/30'
-                      : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
-                  }`}
-                >
-                  <Check className="w-3.5 h-3.5" />
-                  <span>انتشار رسمی نسخه v{selectedAuto.currentVersion.versionNo + 1}</span>
-                </button>
-              </div>
-            </div>
-
-            <ResponsivePreview
-              variant={nodes.some((node) => node.type === 'REPLY_PUBLIC_COMMENT') ? 'comment' : 'dm'}
-              title="پیش‌نمایش سناریو"
-              keyword={nodes.find((node) => node.type === 'TRIGGER')?.config.keywords?.[0] || 'قیمت'}
-              message={nodes.find((node) => node.type === 'SEND_PRIVATE_REPLY')?.config.text || 'سلام! پیام شما دریافت شد. در ادامه اطلاعات کامل را برایتان می‌فرستیم.'}
-            />
-
-            {/* Visual Node Graph Editor Box */}
-            <div className="bg-slate-950 border border-slate-800 rounded-2xl p-6 min-h-[460px] relative overflow-hidden bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px]">
-              <div className="space-y-4 max-w-xl mx-auto">
-                {nodes.map((node, index) => {
-                  const isSelected = selectedNodeId === node.id;
-                  return (
-                    <React.Fragment key={node.id}>
-                      {/* Node Card */}
-                      <div
-                        onClick={() => setSelectedNodeId(node.id)}
-                        className={`p-4 rounded-2xl border transition cursor-pointer relative shadow-lg ${
-                          isSelected
-                            ? 'bg-slate-900 border-purple-500 ring-2 ring-purple-500/30'
-                            : 'bg-slate-900/90 border-slate-800 hover:border-slate-700'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center space-x-2 space-x-reverse">
-                            <span className="w-6 h-6 rounded-lg bg-purple-500/20 text-purple-300 text-xs font-bold flex items-center justify-center font-mono">
-                              {index + 1}
-                            </span>
-                            <span className="text-xs font-bold text-white">{node.title}</span>
-                          </div>
-                          <span className="text-[10px] px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">
-                            {node.type}
-                          </span>
-                        </div>
-
-                        {/* Node Content Summary */}
-                        <div className="text-xs text-slate-300 bg-slate-950/70 p-2.5 rounded-xl border border-slate-800/80">
-                          {node.type === 'TRIGGER' && (
-                            <p>
-                              کلمات کلیدی: {node.config.keywords?.join(' ، ') || 'قیمت'}
-                            </p>
-                          )}
-                          {node.type === 'REPLY_PUBLIC_COMMENT' && (
-                            <p>پاسخ زیر پست: "{node.config.publicReplyText}"</p>
-                          )}
-                          {node.type === 'SEND_PRIVATE_REPLY' && (
-                            <div>
-                              <p>متن دایرکت: "{node.config.text}"</p>
-                              {node.config.quickReplies && (
-                                <div className="flex flex-wrap gap-1 mt-1.5">
-                                  {node.config.quickReplies.map((qr, i) => (
-                                    <span key={i} className="px-1.5 py-0.5 rounded bg-purple-950 text-purple-300 border border-purple-800 text-[10px]">
-                                      🔘 {qr.title}
-                                    </span>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                          {node.type === 'ADD_TAG' && (
-                            <p>افزودن برچسب: #{node.config.tagToAdd || 'لید_جدید'}</p>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Connective Connector Line */}
-                      {index < nodes.length - 1 && (
-                        <div className="flex justify-center py-1">
-                          <div className="w-0.5 h-6 bg-gradient-to-b from-purple-500 to-indigo-500 relative">
-                            <div className="w-2 h-2 rounded-full bg-indigo-400 absolute bottom-0 -left-0.75 animate-ping" />
-                          </div>
-                        </div>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Test Simulation Logs Panel */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-xs font-bold text-amber-300 flex items-center space-x-1.5 space-x-reverse">
-                  <Sparkles className="w-4 h-4" />
-                  <span>تست اجرای زنده سناریو در محیط Builder</span>
-                </span>
-                <div className="flex items-center space-x-2 space-x-reverse">
-                  <input
-                    type="text"
-                    value={testCommentText}
-                    onChange={(e) => setTestCommentText(e.target.value)}
-                    className="px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-700 text-xs text-slate-200 dir-rtl"
-                    placeholder="متن کامنت ورودی..."
-                  />
-                  <button
-                    onClick={handleRunSimulation}
-                    className="px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold transition flex items-center space-x-1 space-x-reverse"
-                  >
-                    <Play className="w-3.5 h-3.5 fill-current" />
-                    <span>تست سناریو</span>
-                  </button>
-                </div>
-              </div>
-
-              {testLog.length > 0 && (
-                <div className="bg-slate-950 p-3 rounded-xl border border-slate-800 font-mono text-[11px] space-y-1 text-slate-300">
-                  {testLog.map((log, i) => (
-                    <p key={i}>{log}</p>
-                  ))}
-                </div>
-              )}
-            </div>
+        <>
+          <div className="builder-toolbar direct-builder-toolbar">
+            <div className="builder-toolbar-title"><button type="button" className="direct-back-btn" onClick={() => setIsBuilding(false)} aria-label="بازگشت به لیست"><ArrowLeft size={17} /></button><span className="direct-toolbar-icon"><Settings2 size={17} /></span><div><strong>{kindLabels[studioKind]}</strong><small>ساخت مرحله‌ای سناریو · پیش‌نمایش زنده</small></div></div>
+            <div className="direct-toolbar-actions"><span className="direct-save-state"><span className="direct-status-dot" /> پیش‌نویس ذخیره‌نشده</span><button type="button" className="btn btn-outline-secondary direct-secondary-btn" onClick={saveDraft} disabled={saving}><Check size={16} /> {saving ? 'در حال ذخیره...' : 'ذخیره پیش‌نویس'}</button><button type="button" className="btn btn-primary direct-primary-btn" onClick={publish} disabled={saving}>انتشار سناریو <ArrowLeft size={15} /></button></div>
           </div>
 
-          {/* Right Config Inspector Panel */}
-          <div className="space-y-4">
-            {/* Linter Validation Card */}
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-              <h3 className="text-xs font-bold text-white mb-2 flex items-center space-x-1.5 space-x-reverse">
-                <AlertTriangle className="w-4 h-4 text-amber-400" />
-                <span>بررسی ضوابط قوانین Meta Linter</span>
-              </h3>
+          <div className="direct-stepper" aria-label="مراحل ساخت سناریو"><span className="is-active"><b>۱</b> فعال‌سازی</span><i /><span className="is-active"><b>۲</b> تنظیم پاسخ</span><i /><span><b>۳</b> تست و انتشار</span></div>
 
-              {validation.errors.length > 0 ? (
-                <div className="space-y-1 text-xs text-rose-400 bg-rose-500/10 p-2.5 rounded-xl border border-rose-500/20">
-                  {validation.errors.map((err, i) => (
-                    <p key={i}>❌ {err}</p>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-xs text-emerald-400 bg-emerald-500/10 p-2.5 rounded-xl border border-emerald-500/20 flex items-center space-x-1.5 space-x-reverse">
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>سناریو تمام قوانین Meta و محدودیت‌های Quick Reply را رعایت می‌کند.</span>
-                </div>
-              )}
+          {error && <div className="alert alert-danger direct-alert" role="alert"><CircleHelp size={16} /> {error}</div>}
+
+          <div className="direct-builder-shell">
+            <aside className="direct-builder-preview">
+              <ResponsivePreview variant={studioKind === 'comment' ? 'comment' : studioKind === 'form' ? 'form' : 'dm'} title={draft.name || kindLabels[studioKind]} message={studioKind === 'form' ? draft.formCompletionMessage : studioKind === 'followup' ? draft.followUpMessage : draft.message} keyword={draft.keywords[0] || 'سلام'} formFields={draft.questions.map((question) => question.label)} />
+              <div className="direct-preview-tip"><Sparkles size={15} /><span>هر تغییر را ابتدا اینجا بررسی کنید؛ انتشار از سمت Meta جدا از پیش‌نمایش انجام می‌شود.</span></div>
+            </aside>
+
+            <div className="direct-builder-form">
+              <section className="direct-panel">
+                <div className="direct-panel-heading"><div><span>اطلاعات سناریو</span><h3>یک نام قابل فهم انتخاب کنید</h3></div><span className="direct-panel-number">۰۱</span></div>
+                <div className="row g-3"><div className="col-12"><label className="direct-label" htmlFor="scenario-name">نام سناریو</label><input id="scenario-name" className="form-control direct-control" value={draft.name} onChange={(event) => updateDraft('name', event.target.value)} /></div><div className="col-12"><label className="direct-label" htmlFor="scenario-description">توضیح کوتاه</label><textarea id="scenario-description" rows={2} className="form-control direct-control" value={draft.description} onChange={(event) => updateDraft('description', event.target.value)} /></div></div>
+              </section>
+
+              <section className="direct-panel">
+                <div className="direct-panel-heading"><div><span>تنظیمات فعال‌سازی</span><h3>چه زمانی این سناریو اجرا شود؟</h3></div><span className="direct-panel-number">۰۲</span></div>
+                {studioKind !== 'followup' && <><div className="direct-field-label-row"><label className="direct-label">کلمات یا عبارت‌های فعال‌ساز</label><small>با Enter یا ویرگول اضافه کنید</small></div><ChipEditor values={draft.keywords} onAdd={addKeyword} onRemove={(index) => updateDraft('keywords', draft.keywords.filter((_, itemIndex) => itemIndex !== index))} /><div className="row g-3 mt-1"><div className="col-12 col-md-6"><SelectField label="نوع تطبیق" value={draft.matchMode} onChange={(value) => updateDraft('matchMode', value as MatchMode)} options={[['contains', 'شامل عبارت'], ['exact', 'برابر با عبارت'], ['starts_with', 'شروع‌شده با عبارت'], ['regex', 'الگوی پیشرفته']]} /></div>{studioKind === 'dm' && <div className="col-12 col-md-6"><ToggleField label="فقط پاسخ به ریپلای استوری" checked={draft.storyReplyOnly} onChange={(value) => updateDraft('storyReplyOnly', value)} /></div>}</div></>}
+                {studioKind === 'comment' && <CommentActivation draft={draft} updateDraft={updateDraft} />}
+                {studioKind === 'form' && <div className="direct-option-grid"><ToggleField label="پیام فعال‌ساز لینک شود" checked={draft.linkMessage} onChange={(value) => updateDraft('linkMessage', value)} /><SelectField label="مدیریت پاسخ‌های تکراری" value={draft.repeatPolicy} onChange={(value) => updateDraft('repeatPolicy', value as RepeatPolicy)} options={[['keep_all', 'همه پاسخ‌ها حفظ شود'], ['limit', 'تعداد محدود حفظ شود'], ['replace', 'پاسخ جدید جایگزین شود']]} />{draft.repeatPolicy === 'limit' && <NumberField label="تعداد پاسخ قابل نگهداری" value={draft.repeatLimit} onChange={(value) => updateDraft('repeatLimit', value)} />}</div>}
+                {studioKind === 'followup' && <FollowUpActivation draft={draft} automations={automations} updateDraft={updateDraft} />}
+              </section>
+
+              {studioKind !== 'form' && studioKind !== 'followup' && <section className="direct-panel"><PanelHeading label="تنظیمات پاسخ" title="پیام را ساده، انسانی و متنوع نگه دارید" number="۰۳" /><VariantEditor label="پاسخ‌های متنوع دایرکت" values={draft.variants} onAdd={() => addVariant()} onChange={(index, value) => updateVariant(index, value)} onRemove={(index) => removeVariant(index)} /><div className="direct-helper"><Sparkles size={16} /><span>برای هر اجرا یکی از متن‌ها به‌صورت چرخشی انتخاب می‌شود تا پاسخ‌ها تکراری و ماشینی به نظر نرسند.</span></div>{studioKind === 'dm' && <ToggleField label="لینک یا دکمهٔ مشاهدهٔ خدمات اضافه شود" checked={draft.linkMessage} onChange={(value) => updateDraft('linkMessage', value)} />}</section>}
+
+              {studioKind === 'comment' && <section className="direct-panel"><PanelHeading label="پاسخ عمومی" title="پاسخ زیر همان پست" number="۰۴" /><VariantEditor label="پاسخ‌های متنوع زیر کامنت" values={draft.publicVariants} onAdd={() => addVariant(true)} onChange={(index, value) => updateVariant(index, value, true)} onRemove={(index) => removeVariant(index, true)} /></section>}
+
+              {studioKind === 'form' && <FormQuestions draft={draft} updateDraft={updateDraft} />}
+              {studioKind === 'followup' && <section className="direct-panel"><PanelHeading label="پیام پیگیری" title="متن پیگیری را بنویسید" number="۰۳" /><textarea className="form-control direct-control direct-textarea-lg" value={draft.followUpMessage} onChange={(event) => updateDraft('followUpMessage', event.target.value)} placeholder="پیام پیگیری شما..." /><div className="direct-helper mt-3"><Clock3 size={16} /><span>پیام پیگیری در محیط واقعی فقط با رعایت پنجرهٔ مجاز پیام‌رسانی و قوانین Meta ارسال می‌شود.</span></div></section>}
+
+              <section className="direct-test-panel"><div><span className="direct-eyebrow">آزمایش امن</span><h3>قبل از انتشار، سناریو را شبیه‌سازی کنید</h3><p>این تست فقط در پنل اجرا می‌شود و هیچ پیام واقعی ارسال نمی‌کند.</p></div><button type="button" className="btn btn-warning direct-test-btn" onClick={runTest} disabled={testing}>{testing ? 'در حال تست...' : 'اجرای تست'}</button>{testResult.length > 0 && <div className="direct-test-result">{testResult.map((line) => <div key={line}><Check size={14} /> {line}</div>)}</div>}</section>
             </div>
-
-            {/* Selected Node Properties Editor */}
-            {selectedNode && (
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-                <div className="border-b border-slate-800 pb-3 flex items-center justify-between">
-                  <div>
-                    <h3 className="text-xs font-bold text-white">تنظیمات {selectedNode.title}</h3>
-                    <p className="text-[10px] text-slate-400 font-mono mt-0.5">ID: {selectedNode.id}</p>
-                  </div>
-                  <button
-                    onClick={() => {
-                      setNodes(nodes.filter((n) => n.id !== selectedNode.id));
-                      setSelectedNodeId(nodes[0]?.id || '');
-                    }}
-                    className="p-1.5 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
-
-                {/* Properties Inputs depending on Node Type */}
-                {selectedNode.type === 'TRIGGER' && (
-                  <div className="space-y-3">
-                    <label className="text-xs font-medium text-slate-300 block">
-                      کلمات کلیدی محرک (جداکننده با ویرگول)
-                    </label>
-                    <input
-                      type="text"
-                      value={selectedNode.config.keywords?.join(' ، ') || ''}
-                      onChange={(e) =>
-                        updateSelectedNodeConfig(
-                          'keywords',
-                          e.target.value.split('،').map((s) => s.trim())
-                        )
-                      }
-                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white focus:outline-none focus:border-purple-500"
-                    />
-                  </div>
-                )}
-
-                {selectedNode.type === 'REPLY_PUBLIC_COMMENT' && (
-                  <div className="space-y-3">
-                    <label className="text-xs font-medium text-slate-300 block">
-                      متن پاسخ عمومی روی کامنت
-                    </label>
-                    <textarea
-                      rows={3}
-                      value={selectedNode.config.publicReplyText || ''}
-                      onChange={(e) => updateSelectedNodeConfig('publicReplyText', e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white focus:outline-none focus:border-purple-500"
-                    />
-                  </div>
-                )}
-
-                {selectedNode.type === 'SEND_PRIVATE_REPLY' && (
-                  <div className="space-y-4">
-                    <div className="space-y-2">
-                      <label className="text-xs font-medium text-slate-300 block">
-                        متن پاسخ خصوصی دایرکت (Private Reply)
-                      </label>
-                      <textarea
-                        rows={3}
-                        value={selectedNode.config.text || ''}
-                        onChange={(e) => updateSelectedNodeConfig('text', e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white focus:outline-none focus:border-purple-500"
-                      />
-                    </div>
-
-                    {/* Quick Replies Config */}
-                    <div className="space-y-2 pt-2 border-t border-slate-800">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-medium text-slate-300">
-                          دکمه‌های پاسخ سریع (حداکثر ۱۳)
-                        </span>
-                        <button
-                          onClick={addQuickReply}
-                          className="text-[11px] text-purple-400 hover:text-purple-300 font-medium"
-                        >
-                          + افزودن دکمه
-                        </button>
-                      </div>
-
-                      <div className="space-y-2">
-                        {selectedNode.config.quickReplies?.map((qr, idx) => (
-                          <div key={idx} className="flex items-center space-x-2 space-x-reverse">
-                            <input
-                              type="text"
-                              value={qr.title}
-                              onChange={(e) => {
-                                const newQRs = [...(selectedNode.config.quickReplies || [])];
-                                newQRs[idx].title = e.target.value;
-                                updateSelectedNodeConfig('quickReplies', newQRs);
-                              }}
-                              className="w-full px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-white"
-                            />
-                            <button
-                              onClick={() => removeQuickReply(idx)}
-                              className="text-rose-400 p-1 hover:bg-rose-500/10 rounded"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {selectedNode.type === 'ADD_TAG' && (
-                  <div className="space-y-3">
-                    <label className="text-xs font-medium text-slate-300 block">
-                      نام برچسب افزودنی
-                    </label>
-                    <input
-                      type="text"
-                      value={selectedNode.config.tagToAdd || ''}
-                      onChange={(e) => updateSelectedNodeConfig('tagToAdd', e.target.value)}
-                      className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white focus:outline-none focus:border-purple-500"
-                    />
-                  </div>
-                )}
-              </div>
-            )}
           </div>
-        </div>
+        </>
       )}
     </div>
   );
 };
+
+interface SelectFieldProps { label: string; value: string; options: Array<[string, string]>; onChange: (value: string) => void; }
+const SelectField: React.FC<SelectFieldProps> = ({ label, value, options, onChange }) => <label className="direct-select-wrap"><span className="direct-label">{label}</span><span className="direct-select-control"><select className="form-select direct-control" value={value} onChange={(event) => onChange(event.target.value)}>{options.map(([optionValue, optionLabel]) => <option value={optionValue} key={optionValue}>{optionLabel}</option>)}</select><ChevronDown size={15} /></span></label>;
+
+interface NumberFieldProps { label: string; value: number; onChange: (value: number) => void; }
+const NumberField: React.FC<NumberFieldProps> = ({ label, value, onChange }) => <label><span className="direct-label">{label}</span><input type="number" min={1} className="form-control direct-control" value={value} onChange={(event) => onChange(Math.max(1, Number(event.target.value) || 1))} /></label>;
+
+interface ToggleFieldProps { label: string; checked: boolean; onChange: (value: boolean) => void; }
+const ToggleField: React.FC<ToggleFieldProps> = ({ label, checked, onChange }) => <label className={`direct-toggle ${checked ? 'is-on' : ''}`}><span><span className="direct-toggle-title">{label}</span><small>{checked ? 'روشن' : 'خاموش'}</small></span><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><i aria-hidden="true" /></label>;
+
+interface ChipEditorProps { values: string[]; onAdd: (value: string) => void; onRemove: (index: number) => void; }
+const ChipEditor: React.FC<ChipEditorProps> = ({ values, onAdd, onRemove }) => { const [input, setInput] = useState(''); const commit = () => { onAdd(input); setInput(''); }; return <div className="direct-chip-editor">{values.map((value, index) => <span className="direct-chip" key={`${value}-${index}`}>{value}<button type="button" onClick={() => onRemove(index)} aria-label={`حذف ${value}`}><X size={12} /></button></span>)}<input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ',') { event.preventDefault(); commit(); } }} onBlur={commit} placeholder="مثلاً قیمت" /></div>; };
+
+interface VariantEditorProps { label: string; values: string[]; onAdd: () => void; onChange: (index: number, value: string) => void; onRemove: (index: number) => void; }
+const VariantEditor: React.FC<VariantEditorProps> = ({ label, values, onAdd, onChange, onRemove }) => <div className="direct-variant-editor"><div className="direct-field-label-row"><label className="direct-label">{label}</label><button type="button" className="direct-inline-btn" onClick={onAdd}><Plus size={14} /> پاسخ جدید</button></div>{values.map((value, index) => <div className="direct-variant-row" key={`${index}-${value}`}><span>{index + 1}</span><textarea className="form-control direct-control" rows={2} value={value} onChange={(event) => onChange(index, event.target.value)} /><button type="button" onClick={() => onRemove(index)} aria-label="حذف پاسخ"><Trash2 size={15} /></button></div>)}</div>;
+
+interface PanelHeadingProps { label: string; title: string; number: string; }
+const PanelHeading: React.FC<PanelHeadingProps> = ({ label, title, number }) => <div className="direct-panel-heading"><div><span>{label}</span><h3>{title}</h3></div><span className="direct-panel-number">{number}</span></div>;
+
+interface CommentActivationProps { draft: StudioDraft; updateDraft: <K extends keyof StudioDraft>(key: K, value: StudioDraft[K]) => void; }
+const CommentActivation: React.FC<CommentActivationProps> = ({ draft, updateDraft }) => <div className="direct-comment-options"><SelectField label="محدودهٔ پست" value={draft.postScope} onChange={(value) => updateDraft('postScope', value as StudioDraft['postScope'])} options={[['all', 'روی همهٔ پست‌ها'], ['selected', 'فقط پست‌های انتخاب‌شده'], ['live', 'فقط لایو']]} />{draft.postScope === 'selected' && <div className="direct-post-picker"><div className="direct-field-label-row"><span className="direct-label">انتخاب پست</span><small>{draft.postIds.length} پست انتخاب شده</small></div><div className="direct-post-grid">{DEMO_POSTS.map((post) => <button type="button" key={post.id} className={`direct-post-card ${draft.postIds.includes(post.id) ? 'is-selected' : ''}`} onClick={() => updateDraft('postIds', draft.postIds.includes(post.id) ? draft.postIds.filter((id) => id !== post.id) : [...draft.postIds, post.id])}><img src={post.image} alt="" /><span><strong>{post.title}</strong><small>{post.meta}</small></span>{draft.postIds.includes(post.id) && <Check size={15} />}</button>)}</div></div>}<div className="row g-3"><div className="col-12 col-md-6"><SelectField label="پاسخ در کجا ارسال شود؟" value={draft.destination} onChange={(value) => updateDraft('destination', value as CommentDestination)} options={[['dm', 'فقط دایرکت'], ['comment', 'فقط زیر کامنت'], ['both', 'دایرکت و کامنت']]} /></div><div className="col-12 col-md-6"><ToggleField label="فقط برای دنبال‌کننده‌ها" checked={draft.requireFollow} onChange={(value) => updateDraft('requireFollow', value)} /></div></div><div className="direct-helper"><UsersRound size={16} /><span>این گزینه فقط وقتی اجرا را محدود می‌کند که وضعیت دنبال‌کردن در رویداد Meta در دسترس باشد؛ سیستم به‌صورت خودکار کسی را فالو نمی‌کند.</span></div></div>;
+
+interface FormQuestionsProps { draft: StudioDraft; updateDraft: <K extends keyof StudioDraft>(key: K, value: StudioDraft[K]) => void; }
+const FormQuestions: React.FC<FormQuestionsProps> = ({ draft, updateDraft }) => <section className="direct-panel"><PanelHeading label="تنظیمات فرم" title="سؤال‌ها را کوتاه و مرحله‌ای بچینید" number="۰۳" /><div className="row g-3 mb-3"><div className="col-12 col-md-6"><label className="direct-label">عنوان فرم</label><input className="form-control direct-control" value={draft.formTitle} onChange={(event) => updateDraft('formTitle', event.target.value)} /></div><div className="col-12 col-md-6"><label className="direct-label">متن دکمهٔ خروج</label><input className="form-control direct-control" value={draft.formExitLabel} onChange={(event) => updateDraft('formExitLabel', event.target.value)} /></div></div><div className="direct-question-list">{draft.questions.map((question, index) => <article className="direct-question-card" key={question.id}><span className="direct-question-index">{index + 1}</span><div><strong>{question.label}</strong><p>{question.prompt}</p><small>{question.fieldType} · {question.required ? 'الزامی' : 'اختیاری'}</small></div><button type="button" onClick={() => updateDraft('questions', draft.questions.filter((item) => item.id !== question.id))} aria-label="حذف سؤال"><Trash2 size={15} /></button></article>)}</div><button type="button" className="direct-add-question" onClick={() => updateDraft('questions', [...draft.questions, makeQuestion(draft.questions.length)])}><Plus size={16} /> افزودن سؤال</button><label className="direct-label mt-3">پیام تکمیل فرم</label><textarea className="form-control direct-control" rows={3} value={draft.formCompletionMessage} onChange={(event) => updateDraft('formCompletionMessage', event.target.value)} /></section>;
+
+interface FollowUpActivationProps { draft: StudioDraft; automations: Automation[]; updateDraft: <K extends keyof StudioDraft>(key: K, value: StudioDraft[K]) => void; }
+const FollowUpActivation: React.FC<FollowUpActivationProps> = ({ draft, automations, updateDraft }) => <div className="direct-followup-options"><SelectField label="سناریوی پایه" value={draft.followUpAutomationId} onChange={(value) => updateDraft('followUpAutomationId', value)} options={[[ '', 'انتخاب پاسخ خودکار پایه'], ...automations.filter((auto) => inferKind(auto) !== 'followup').map((auto) => [auto.id, auto.name])]} /><SelectField label="چه زمانی پیگیری شود؟" value={draft.followUpCondition} onChange={(value) => updateDraft('followUpCondition', value as StudioDraft['followUpCondition'])} options={[['no_reply', 'وقتی کاربر پاسخی نداده است'], ['always', 'در هر حالت']]} /><NumberField label="فاصلهٔ پیگیری (دقیقه)" value={draft.delayMinutes} onChange={(value) => updateDraft('delayMinutes', value)} /></div>;

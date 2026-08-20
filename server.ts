@@ -572,6 +572,8 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
     replyPayload,
     contactTags: contact.tags,
     windowOpen: Date.parse(conversation.standardWindowOpenUntil) >= Date.now(),
+    mediaId: isComment ? String(value?.media?.id || '') : undefined,
+    isFollower: typeof fromUser.is_follower === 'boolean' ? fromUser.is_follower : undefined,
   };
   const matchedAutomation = automations
     .filter((auto) => matchesAutomation(auto, context))
@@ -665,17 +667,24 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
     return error;
   };
 
+  const chooseVariant = (variants: string[] | undefined, fallback: string | undefined) => {
+    const values = (variants || []).map((item) => String(item).trim()).filter(Boolean);
+    return values.length ? values[Math.floor(Math.random() * values.length)] : fallback;
+  };
+
   for (const node of nodes) {
     switch (node.type) {
       case 'REPLY_PUBLIC_COMMENT':
-        if (isComment && node.config.publicReplyText) {
-          await recordOutbound('public_comment_reply', { text: node.config.publicReplyText }, 'public_comment_moderation');
+        if (isComment && node.config.commentReplyDestination !== 'dm') {
+          const publicText = chooseVariant(node.config.publicResponseVariants, node.config.publicReplyText);
+          if (publicText) await recordOutbound('public_comment_reply', { text: publicText }, 'public_comment_moderation');
         }
         break;
       case 'SEND_PRIVATE_REPLY':
-        if (node.config.text) {
+        if (node.config.text && !(isComment && node.config.commentReplyDestination === 'comment')) {
+          const privateText = chooseVariant(node.config.responseVariants, node.config.text);
           await recordOutbound('private_reply', {
-            text: node.config.text,
+            text: privateText,
             quickReplies: node.config.quickReplies,
             isPrivateReply: true,
           }, 'comment_to_dm_7day_rule');
@@ -1007,6 +1016,45 @@ app.get('/api/v1/contacts', (_req, res) => {
 // Forms & Products
 app.get('/api/v1/forms', (_req, res) => {
   res.json({ forms, submissions: formSubmissions });
+});
+
+app.post('/api/v1/forms', (req, res) => {
+  const body = req.body || {};
+  const fields = Array.isArray(body.fields) && body.fields.length > 0
+    ? body.fields.map((field: any, index: number) => ({
+        id: `field_${crypto.randomUUID()}`,
+        fieldKey: String(field.fieldKey || `field_${index + 1}`),
+        label: String(field.label || `سؤال ${index + 1}`),
+        fieldType: ['text', 'phone', 'email', 'choice'].includes(field.fieldType) ? field.fieldType : 'text',
+        prompt: String(field.prompt || field.label || `پاسخ سؤال ${index + 1}`),
+        required: field.required !== false,
+        sortOrder: index + 1,
+        ...(Array.isArray(field.choices) ? { choices: field.choices.map(String) } : {}),
+      }))
+    : [{
+        id: `field_${crypto.randomUUID()}`,
+        fieldKey: 'full_name',
+        label: 'نام و نام خانوادگی',
+        fieldType: 'text' as const,
+        prompt: 'لطفاً نام و نام خانوادگی‌تان را وارد کنید.',
+        required: true,
+        sortOrder: 1,
+      }];
+  const createdAt = new Date().toISOString();
+  const form: Form = {
+    id: `form_${crypto.randomUUID()}`,
+    workspaceId: workspace.id,
+    name: typeof body.name === 'string' && body.name.trim() ? body.name.trim() : 'فرم جدید دایرکت',
+    description: typeof body.description === 'string' ? body.description : 'فرم کوتاه برای دریافت اطلاعات اولیه مخاطب',
+    status: 'draft',
+    fields,
+    completionAction: 'send_text',
+    submissionCount: 0,
+    createdAt,
+  };
+  forms.unshift(form);
+  persistState();
+  res.status(201).json({ form });
 });
 
 app.get('/api/v1/products', (_req, res) => {

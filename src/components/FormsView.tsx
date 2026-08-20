@@ -1,15 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, FileSpreadsheet, FormInput, UserCheck } from 'lucide-react';
+import { CheckCircle2, FileSpreadsheet, FormInput, Plus, UserCheck } from 'lucide-react';
 import { Form, FormSubmission } from '../types';
 import { ResponsivePreview } from './ResponsivePreview';
 
 interface FormsViewProps {
   forms: Form[];
   submissions: FormSubmission[];
+  onCreateForm: () => Promise<Form>;
 }
 
-export const FormsView: React.FC<FormsViewProps> = ({ forms, submissions }) => {
+export const FormsView: React.FC<FormsViewProps> = ({ forms, submissions, onCreateForm }) => {
   const [selectedFormId, setSelectedFormId] = useState<string>(forms[0]?.id || '');
+  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     if (!selectedFormId && forms[0]) setSelectedFormId(forms[0].id);
@@ -44,6 +46,16 @@ export const FormsView: React.FC<FormsViewProps> = ({ forms, submissions }) => {
     URL.revokeObjectURL(url);
   };
 
+  const handleCreateForm = async () => {
+    setCreating(true);
+    try {
+      const form = await onCreateForm();
+      setSelectedFormId(form.id);
+    } finally {
+      setCreating(false);
+    }
+  };
+
   return (
     <div className="space-y-5" dir="rtl">
       <header className="workspace-page-header">
@@ -53,6 +65,7 @@ export const FormsView: React.FC<FormsViewProps> = ({ forms, submissions }) => {
           <p>اطلاعات موردنیاز را مرحله‌به‌مرحله از مخاطب بگیرید و قبل از انتشار، تجربهٔ پاسخ‌گویی را روی موبایل و دسکتاپ ببینید.</p>
         </div>
         <div className="workspace-page-actions">
+          <button type="button" onClick={handleCreateForm} className="btn btn-primary direct-primary-btn" disabled={creating}><Plus size={16} /> {creating ? 'در حال ساخت...' : 'ساخت فرم جدید'}</button>
           <button type="button" onClick={handleExportCSV} className="topbar-oauth"><FileSpreadsheet size={16} /> خروجی CSV پاسخ‌ها</button>
         </div>
       </header>

@@ -160,6 +160,20 @@ export interface FlowNode {
     conditionOperator?: 'equals' | 'contains' | 'contains_any' | 'is_window_open' | 'has_tag';
     conditionValue?: string | string[];
     conditionField?: string;
+    /** DirectSaz-style scenario options kept on the trigger/action nodes. */
+    postScope?: 'all' | 'selected' | 'live';
+    postIds?: string[];
+    commentReplyDestination?: 'dm' | 'comment' | 'both';
+    requireFollow?: boolean;
+    responseVariants?: string[];
+    publicResponseVariants?: string[];
+    storyReplyOnly?: boolean;
+    linkMessage?: boolean;
+    repeatPolicy?: 'keep_all' | 'limit' | 'replace';
+    repeatLimit?: number;
+    followUpAutomationId?: string;
+    followUpCondition?: 'always' | 'no_reply';
+    delayMinutes?: number;
   };
   position: { x: number; y: number };
 }

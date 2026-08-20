@@ -14,6 +14,8 @@ export interface IncomingContext {
   replyPayload?: string;
   contactTags?: string[];
   windowOpen?: boolean;
+  mediaId?: string;
+  isFollower?: boolean;
 }
 
 export function clone<T>(value: T): T {
@@ -54,6 +56,13 @@ function keywordMatches(text: string, keyword: string, mode: FlowNode['config'][
 export function matchesAutomation(auto: Automation, context: IncomingContext): boolean {
   if (auto.status !== 'active' || !triggerMatches(auto.triggerType, context.trigger)) return false;
   const triggerNode = (auto.publishedVersion || auto.currentVersion).nodes.find((node) => node.type === 'TRIGGER');
+  if (context.trigger === 'COMMENT_CREATED' && triggerNode) {
+    const { postScope, postIds, requireFollow } = triggerNode.config;
+    if (postScope === 'selected' && postIds?.length && (!context.mediaId || !postIds.includes(context.mediaId))) return false;
+    // Meta does not include follower status in every webhook shape. Only reject
+    // when it explicitly tells us that the sender is not a follower.
+    if (requireFollow && context.isFollower === false) return false;
+  }
   const keywords = triggerNode?.config.keywords?.length ? triggerNode.config.keywords : auto.keywords;
   if (!keywords?.length) return false;
   const mode = triggerNode?.config.matchMode || 'contains';

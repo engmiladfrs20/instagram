@@ -276,6 +276,23 @@ export default function App() {
     }
   };
 
+  const handleCreateForm = async () => {
+    const data = await requestJson('/api/v1/forms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'فرم جدید دایرکت',
+        description: 'فرم کوتاه برای دریافت اطلاعات اولیه مخاطب',
+        fields: [
+          { fieldKey: 'full_name', label: 'نام و نام خانوادگی', fieldType: 'text', prompt: 'لطفاً نام و نام خانوادگی‌تان را وارد کنید.', required: true },
+          { fieldKey: 'phone_number', label: 'شماره تماس', fieldType: 'phone', prompt: 'شماره تماس خود را وارد کنید.', required: true },
+        ],
+      }),
+    });
+    setForms((previous) => [data.form, ...previous]);
+    return data.form as Form;
+  };
+
   // Handler: Replay DLQ Item
   const handleReplayDLQ = async (id: string) => {
     try {
@@ -444,7 +461,7 @@ export default function App() {
             )}
 
             {currentTab === 'forms' && (
-              <FormsView forms={forms} submissions={submissions} />
+              <FormsView forms={forms} submissions={submissions} onCreateForm={handleCreateForm} />
             )}
 
             {currentTab === 'products' && (

@@ -908,6 +908,8 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
     replyPayload,
     contactTags: contact.tags,
     windowOpen: Date.parse(conversation.standardWindowOpenUntil) >= Date.now(),
+    mediaId: isComment ? String(value?.media?.id || '') : undefined,
+    isFollower: typeof fromUser.is_follower === 'boolean' ? fromUser.is_follower : undefined,
   };
   const automation = automations
     .filter((item) => matchesAutomation(item, context))
@@ -969,11 +971,19 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
     }
   };
 
+  const chooseVariant = (variants: string[] | undefined, fallback: string | undefined) => {
+    const values = (variants || []).map((item) => String(item).trim()).filter(Boolean);
+    if (values.length === 0) return fallback;
+    return values[Math.floor(Math.random() * values.length)];
+  };
+
   for (const node of executableNodes(runtimeVersion(automation), context)) {
-    if (node.type === 'REPLY_PUBLIC_COMMENT' && isComment && node.config.publicReplyText) {
-      await recordOutbound('public_comment_reply', { text: node.config.publicReplyText }, 'public_comment_moderation');
-    } else if (node.type === 'SEND_PRIVATE_REPLY' && node.config.text) {
-      await recordOutbound('private_reply', { text: node.config.text, quickReplies: node.config.quickReplies, isPrivateReply: true }, 'comment_to_dm_7day_rule');
+    if (node.type === 'REPLY_PUBLIC_COMMENT' && isComment && node.config.commentReplyDestination !== 'dm') {
+      const publicText = chooseVariant(node.config.publicResponseVariants, node.config.publicReplyText);
+      if (publicText) await recordOutbound('public_comment_reply', { text: publicText }, 'public_comment_moderation');
+    } else if (node.type === 'SEND_PRIVATE_REPLY' && node.config.text && !(isComment && node.config.commentReplyDestination === 'comment')) {
+      const privateText = chooseVariant(node.config.responseVariants, node.config.text);
+      await recordOutbound('private_reply', { text: privateText, quickReplies: node.config.quickReplies, isPrivateReply: true }, 'comment_to_dm_7day_rule');
     } else if (node.type === 'SEND_TEXT' && node.config.text) {
       await recordOutbound('text', { text: node.config.text }, 'automation');
     } else if (node.type === 'SEND_QUICK_REPLIES' && (node.config.text || node.config.quickReplies?.length)) {
@@ -1682,6 +1692,56 @@ export default {
 
     if (pathname === '/api/v1/forms' && method === 'GET') {
       return jsonResponse({ forms, submissions: formSubmissions });
+    }
+
+    if (pathname === '/api/v1/forms' && method === 'POST') {
+      const body: any = await request.json().catch(() => ({}));
+      const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : 'فرم جدید دایرکت';
+      const fields = Array.isArray(body.fields) && body.fields.length > 0
+        ? body.fields.map((field: any, index: number) => ({
+            id: `field_${crypto.randomUUID()}`,
+            fieldKey: String(field.fieldKey || `field_${index + 1}`),
+            label: String(field.label || `سؤال ${index + 1}`),
+            fieldType: ['text', 'phone', 'email', 'choice'].includes(field.fieldType) ? field.fieldType : 'text',
+            prompt: String(field.prompt || field.label || `پاسخ سؤال ${index + 1}`),
+            required: field.required !== false,
+            sortOrder: index + 1,
+            ...(Array.isArray(field.choices) ? { choices: field.choices.map(String) } : {}),
+          }))
+        : [{
+            id: `field_${crypto.randomUUID()}`,
+            fieldKey: 'full_name',
+            label: 'نام و نام خانوادگی',
+            fieldType: 'text' as const,
+            prompt: 'لطفاً نام و نام خانوادگی‌تان را وارد کنید.',
+            required: true,
+            sortOrder: 1,
+          }];
+      const createdAt = new Date().toISOString();
+      const form: Form = {
+        id: `form_${crypto.randomUUID()}`,
+        workspaceId: workspace.id,
+        name,
+        description: typeof body.description === 'string' ? body.description : 'فرم کوتاه برای دریافت اطلاعات اولیه مخاطب',
+        status: 'draft',
+        fields,
+        completionAction: 'send_text',
+        submissionCount: 0,
+        createdAt,
+      };
+      forms.unshift(form);
+      auditLogs.unshift({
+        id: `aud_${crypto.randomUUID()}`,
+        workspaceId: workspace.id,
+        actorName: 'میلاد فراستی',
+        action: 'CREATE_FORM',
+        resourceType: 'form',
+        resourceId: form.id,
+        metadata: { name: form.name },
+        createdAt,
+      });
+      await persistWorkerState(env);
+      return jsonResponse({ form }, 201);
     }
 
     if (pathname === '/api/v1/products' && method === 'GET') {

@@ -933,6 +933,24 @@ app.patch('/api/v1/automations/:id', (req, res) => {
   res.json({ automation: auto });
 });
 
+app.delete('/api/v1/automations/:id', (req, res) => {
+  const index = automations.findIndex((automation) => automation.id === req.params.id);
+  if (index < 0) return res.status(404).json({ error: 'Automation not found' });
+  const [deleted] = automations.splice(index, 1);
+  auditLogs.unshift({
+    id: `aud_${Date.now()}`,
+    workspaceId: workspace.id,
+    actorName: 'میلاد فراستی',
+    action: 'DELETE_AUTOMATION',
+    resourceType: 'automation',
+    resourceId: req.params.id,
+    metadata: { name: deleted.name },
+    createdAt: new Date().toISOString(),
+  });
+  persistState();
+  res.json({ ok: true, id: req.params.id });
+});
+
 app.post('/api/v1/automations/:id/publish', (req, res) => {
   const auto = automations.find((a) => a.id === req.params.id);
   if (!auto) return res.status(404).json({ error: 'Automation not found' });

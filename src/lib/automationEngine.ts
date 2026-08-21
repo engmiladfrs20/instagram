@@ -49,6 +49,9 @@ function triggerMatches(triggerType: TriggerType, trigger: IncomingTrigger): boo
   if (trigger === 'DM_RECEIVED') {
     return triggerType === 'DM_RECEIVED' || triggerType === 'DM_KEYWORD';
   }
+  if (trigger === 'QUICK_REPLY_SELECTED') {
+    return triggerType === 'QUICK_REPLY_SELECTED' || triggerType === 'DM_RECEIVED' || triggerType === 'DM_KEYWORD';
+  }
   return triggerType === trigger;
 }
 
@@ -80,6 +83,12 @@ function versionMatchesAutomation(auto: Automation, version: AutomationVersion, 
   const triggerNode = version.nodes.find((node) => node.type === 'TRIGGER');
   const triggerType = triggerNode?.config.triggerType || auto.triggerType;
   if (!triggerMatches(triggerType, context.trigger)) return false;
+  const followGateClaim = Boolean(
+    context.replyPayload
+      && triggerNode?.config.followGateMode === 'claim'
+      && triggerNode.config.followGatePayload === context.replyPayload,
+  );
+  if (followGateClaim) return true;
   if (context.trigger === 'COMMENT_CREATED' && triggerNode) {
     const { postScope, postIds, requireFollow } = triggerNode.config;
     if (postScope === 'selected' && postIds?.length && (!context.mediaId || !postIds.includes(context.mediaId))) return false;
@@ -134,10 +143,13 @@ export function executableNodes(version: AutomationVersion, context: IncomingCon
     visited.add(id);
     const node = byId.get(id);
     if (!node) continue;
-    if (node.type !== 'TRIGGER' && node.type !== 'CONDITION') result.push(node);
+    if (node.type !== 'TRIGGER' && node.type !== 'CONDITION') {
+      const isFollowGateNode = node.config.followGateMode === 'claim';
+      if (!(isFollowGateNode && context.replyPayload)) result.push(node);
+    }
     if (node.type === 'CONDITION' && !conditionPasses(node, context)) continue;
     for (const edge of outgoing.get(id) || []) {
-      if (context.replyPayload && edge.conditionValue && edge.conditionValue !== context.replyPayload) continue;
+      if (edge.conditionValue && edge.conditionValue !== context.replyPayload) continue;
       queue.push(edge.targetNodeId);
     }
   }

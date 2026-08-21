@@ -555,6 +555,10 @@ function removeSyntheticConversationData() {
 
 function findOrCreateMetaContact(participant: any, now: string): Contact {
   const id = String(participant?.id || '');
+  const participantUsername = String(participant?.username || '').trim();
+  const participantName = String(participant?.name || '').trim();
+  const fallbackUsername = participantUsername || `user_${id.slice(-8) || 'unknown'}`;
+  const fallbackDisplayName = participantName || participantUsername || 'مخاطب اینستاگرام';
   let contact = contacts.find((item) => item.igScopedUserId === id);
   if (!contact) {
     contact = {
@@ -562,8 +566,8 @@ function findOrCreateMetaContact(participant: any, now: string): Contact {
       workspaceId: workspace.id,
       instagramAccountId: instagramAccount.id,
       igScopedUserId: id,
-      username: String(participant?.username || `user_${id.slice(-8) || 'unknown'}`),
-      displayName: String(participant?.name || participant?.username || `Instagram user ${id.slice(-6)}`),
+      username: fallbackUsername,
+      displayName: fallbackDisplayName,
       avatarUrl: participant?.profile_picture_url ? String(participant.profile_picture_url) : undefined,
       customFields: { data_source: 'instagram_conversations_api' },
       tags: [],
@@ -575,8 +579,8 @@ function findOrCreateMetaContact(participant: any, now: string): Contact {
     contacts.unshift(contact);
   } else {
     contact.lastSeenAt = now;
-    if (participant?.username) contact.username = String(participant.username);
-    if (participant?.name) contact.displayName = String(participant.name);
+    if (participantUsername) contact.username = participantUsername;
+    if (participantName || participantUsername) contact.displayName = participantName || participantUsername;
     if (participant?.profile_picture_url) contact.avatarUrl = String(participant.profile_picture_url);
     contact.customFields = { ...contact.customFields, data_source: 'instagram_conversations_api' };
   }
@@ -1868,6 +1872,25 @@ export default {
       });
 
       return jsonResponse({ automation: auto, message: 'با موفقیت منتشر شد' });
+    }
+
+    if (pathname.startsWith('/api/v1/automations/') && method === 'DELETE') {
+      const id = pathname.split('/')[4];
+      const index = automations.findIndex((automation) => automation.id === id);
+      if (index < 0) return jsonResponse({ error: 'Automation not found' }, 404);
+      const [deleted] = automations.splice(index, 1);
+      auditLogs.unshift({
+        id: `aud_${Date.now()}`,
+        workspaceId: workspace.id,
+        actorName: 'میلاد فراستی',
+        action: 'DELETE_AUTOMATION',
+        resourceType: 'automation',
+        resourceId: id,
+        metadata: { name: deleted.name },
+        createdAt: new Date().toISOString(),
+      });
+      await persistWorkerState(env);
+      return jsonResponse({ ok: true, id });
     }
 
     if (pathname.startsWith('/api/v1/automations/') && method === 'PATCH') {

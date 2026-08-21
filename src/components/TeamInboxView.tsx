@@ -27,6 +27,19 @@ function initials(contact?: Contact): string {
   return value.trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'IG';
 }
 
+function contactDisplayName(contact?: Contact): string {
+  const displayName = contact?.displayName?.trim();
+  const username = contact?.username?.trim();
+  if (displayName && !/^Instagram user(?:\s|$)/i.test(displayName) && !/^user_[\w-]+$/i.test(displayName)) return displayName;
+  if (username && !/^user_[\w-]+$/i.test(username)) return username;
+  return 'مخاطب اینستاگرام';
+}
+
+function contactHandle(contact?: Contact): string {
+  const username = contact?.username?.trim();
+  return username && !/^user_[\w-]+$/i.test(username) ? `@${username.replace(/^@/, '')}` : 'حساب اینستاگرام';
+}
+
 function ContactAvatar({ contact, size = 'md' }: { contact?: Contact; size?: 'sm' | 'md' | 'lg' }) {
   return contact?.avatarUrl ? (
     <img className={`inbox-avatar inbox-avatar-${size}`} src={contact.avatarUrl} alt={contact.displayName} referrerPolicy="no-referrer" />
@@ -38,10 +51,11 @@ function ContactAvatar({ contact, size = 'md' }: { contact?: Contact; size?: 'sm
 function messageText(message: Message): string {
   if (message.textBody?.trim()) return message.textBody;
   if (message.content.text?.trim()) return message.content.text;
-  if (message.content.mediaType) return `رسانهٔ ${message.content.mediaType}`;
+  if (message.content.mediaType) return `رسانهٔ ${message.content.mediaType === 'image' ? 'تصویری' : message.content.mediaType === 'video' ? 'ویدئویی' : 'صوتی'}`;
   if (message.content.quickReplies?.length) return message.content.quickReplies.map((item) => item.title).join('، ');
   if (message.content.buttons?.length) return message.content.buttons.map((item) => item.title).join('، ');
-  return 'پیام بدون متن';
+  if (message.messageType === 'comment') return message.content.commentText || 'کامنت اینستاگرام';
+  return 'پیام اینستاگرام بدون متن';
 }
 
 function messageKind(message: Message): string {
@@ -76,6 +90,15 @@ export const TeamInboxView: React.FC<TeamInboxViewProps> = ({
     () => messages.filter((message) => message.conversationId === selectedConv?.id).sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt)),
     [messages, selectedConv?.id],
   );
+  const latestMessages = useMemo(() => {
+    const byConversation = new Map<string, Message>();
+    for (const message of messages) {
+      const current = byConversation.get(message.conversationId);
+      if (!current || Date.parse(message.createdAt) > Date.parse(current.createdAt)) byConversation.set(message.conversationId, message);
+    }
+    return byConversation;
+  }, [messages]);
+  const conversationPreview = (conversation: Conversation) => conversation.lastMessagePreview?.trim() || (latestMessages.get(conversation.id) ? messageText(latestMessages.get(conversation.id)!) : 'مکالمهٔ جدید');
   const filteredConversations = conversations.filter((conversation) => {
     const query = searchQuery.trim().toLocaleLowerCase('fa-IR');
     if (!query) return true;
@@ -126,8 +149,8 @@ export const TeamInboxView: React.FC<TeamInboxViewProps> = ({
               <button type="button" className={`inbox-conversation-row ${selected ? 'is-selected' : ''}`} key={conversation.id} onClick={() => setSelectedConvId(conversation.id)} aria-pressed={selected}>
                 <ContactAvatar contact={conversation.contact} />
                 <span className="inbox-conversation-copy">
-                  <span className="inbox-conversation-title"><strong>{conversation.contact.displayName || 'کاربر اینستاگرام'}</strong><small>{conversation.mode === 'human' ? 'اپراتور' : 'اتوماسیون'}</small></span>
-                  <span className="inbox-conversation-preview">@{conversation.contact.username || 'instagram_user'} · {conversation.lastMessagePreview || 'مکالمهٔ جدید'}</span>
+                  <span className="inbox-conversation-title"><strong>{contactDisplayName(conversation.contact)}</strong><small>{conversation.mode === 'human' ? 'اپراتور' : 'اتوماسیون'}</small></span>
+                  <span className="inbox-conversation-preview">{contactHandle(conversation.contact)} · {conversationPreview(conversation)}</span>
                   <span className="inbox-conversation-meta"><span><Clock3 size={11} /> پنجرهٔ پاسخ فعال</span><time>{new Date(conversation.lastMessageAt).toLocaleTimeString('fa-IR')}</time></span>
                 </span>
               </button>
@@ -142,7 +165,7 @@ export const TeamInboxView: React.FC<TeamInboxViewProps> = ({
             <header className="inbox-chat-header">
               <div className="inbox-person">
                 <ContactAvatar contact={selectedConv.contact} size="sm" />
-                <div><strong>{selectedConv.contact.displayName || 'کاربر اینستاگرام'}</strong><span>@{selectedConv.contact.username || 'instagram_user'}</span></div>
+                <div><strong>{contactDisplayName(selectedConv.contact)}</strong><span>{contactHandle(selectedConv.contact)}</span></div>
               </div>
               <button type="button" className={`inbox-takeover ${selectedConv.mode === 'human' ? 'is-human' : ''}`} onClick={() => onToggleTakeover(selectedConv.id, selectedConv.mode)}>
                 {selectedConv.mode === 'human' ? <><Bot size={15} /> بازگشت به ربات</> : <><UserCheck size={15} /> تحویل به اپراتور</>}
@@ -172,7 +195,7 @@ export const TeamInboxView: React.FC<TeamInboxViewProps> = ({
       </div>
 
       {contact && <aside className="inbox-contact-panel">
-        <div className="inbox-contact-header"><ContactAvatar contact={contact} size="lg" /><strong>{contact.displayName || 'کاربر اینستاگرام'}</strong><span>@{contact.username || 'instagram_user'}</span><em><Sparkles size={12} /> امتیاز لید: {contact.leadScore}/100</em></div>
+        <div className="inbox-contact-header"><ContactAvatar contact={contact} size="lg" /><strong>{contactDisplayName(contact)}</strong><span>{contactHandle(contact)}</span><em><Sparkles size={12} /> امتیاز لید: {contact.leadScore}/100</em></div>
         <div className="inbox-contact-section"><h3>اطلاعات تماس</h3><p><Phone size={14} /> {contact.phone || 'ثبت نشده'}</p><p><Mail size={14} /> {contact.email || 'ثبت نشده'}</p></div>
         <div className="inbox-contact-section"><h3><Tag size={14} /> برچسب‌ها</h3><div className="inbox-tags">{contact.tags.length ? contact.tags.map((tag) => <span key={tag}>#{tag}</span>) : <small>بدون برچسب</small>}</div></div>
         <div className="inbox-contact-window"><strong>پنجرهٔ پاسخ Meta</strong><span>{Date.parse(selectedConv?.standardWindowOpenUntil || '') > Date.now() ? 'فعال' : 'منقضی شده'}</span></div>

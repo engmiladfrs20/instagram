@@ -1081,3 +1081,45 @@ button, input, select, textarea { min-width: 0; line-height: 1.55; }
   .preview-action-composer { width: 100%; }
   .preview-stage { padding: .65rem; }
 }
+
+/* Final readability pass: keep every control legible in both themes and at
+   browser zoom levels without changing the existing color-token system. */
+.app-shell, .app-shell * { font-family: Vazirmatn, Tahoma, Arial, sans-serif !important; }
+button, .btn { border-radius: 13px; font-family: inherit; }
+.direct-studio { font-size: 1rem; }
+.direct-panel-heading > div > span, .direct-eyebrow, .direct-label,
+.direct-field-label-row, .direct-post-count { color: var(--bs-body-color); font-size: .82rem; }
+.direct-panel-heading h3, .direct-scenario-copy strong, .direct-question-card strong,
+.direct-toggle-title { color: var(--bs-body-color); font-size: .98rem; }
+.direct-panel-heading > div > span, .direct-eyebrow { color: var(--color-purple-600); font-weight: 850; }
+.direct-control, .direct-control input, .direct-control select, .direct-control textarea { min-height: 44px; color: var(--bs-body-color); font-size: .9rem; }
+.direct-control::placeholder, .direct-field-label-row small, .direct-helper,
+.direct-preview-tip, .direct-test-panel p { font-size: .78rem; }
+.direct-primary-btn, .direct-secondary-btn, .direct-edit-btn, .direct-delete-btn,
+.direct-test-btn, .direct-add-question, .direct-inline-btn { min-height: 42px; font-size: .84rem; }
+.direct-delete-btn { color: var(--color-rose-700); border: 1px solid color-mix(in srgb, var(--color-rose-500) 35%, var(--bs-border-color)); background: color-mix(in srgb, var(--color-rose-500) 8%, var(--builder-surface-soft)); }
+.direct-delete-btn:hover { color: var(--color-white); border-color: var(--color-rose-500); background: var(--color-rose-500); }
+.direct-variant-row textarea { min-height: 78px; font-size: .9rem; }
+.direct-variant-row > button, .direct-question-card > button { border-radius: 12px; }
+.direct-post-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: .75rem; }
+.direct-post-card { border-radius: 15px; }
+.direct-post-card img { width: 100%; height: clamp(120px, 11vw, 175px); object-fit: contain; background: var(--builder-surface-soft); }
+.direct-post-card > span { min-height: 58px; padding: .6rem; }
+.direct-post-card strong { font-size: .76rem; }
+.direct-post-card small { font-size: .68rem; }
+.direct-follow-gate-panel { border-color: color-mix(in srgb, var(--color-amber-500) 30%, var(--bs-border-color)); }
+.direct-follow-gate-fields { display: grid; gap: .8rem; margin-top: .9rem; }
+.direct-follow-gate-fields .direct-label { margin: 0; }
+.direct-follow-gate-fields textarea, .direct-follow-gate-fields input { margin-top: .35rem; }
+.preview-action-pills button, .preview-action-button, .preview-submit-bar,
+.preview-action-composer, .preview-action-composer input, .preview-action-composer-submit { border-radius: 13px; }
+.preview-action-pills button, .preview-action-button, .preview-action-composer-submit { font-size: .78rem; }
+.inbox-conversation-title strong, .inbox-person strong, .inbox-contact-header strong { font-size: .92rem; }
+.inbox-conversation-preview, .inbox-message-bubble p, .inbox-reply-form input { font-size: .88rem; }
+.inbox-conversation-meta, .inbox-message-bubble small, .inbox-person span { font-size: .74rem; }
+.inbox-takeover, .inbox-reply-form button { border-radius: 13px; font-size: .82rem; }
+
+@media (max-width: 767.98px) {
+  .direct-scenario-actions { grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); }
+  .direct-post-card img { height: 145px; }
+}

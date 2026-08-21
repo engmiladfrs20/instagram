@@ -63,6 +63,10 @@ interface StudioDraft {
   postIds: string[];
   destination: CommentDestination;
   requireFollow: boolean;
+  followGateEnabled: boolean;
+  followGateMessage: string;
+  followGateButtonTitle: string;
+  followGateSuccessMessage: string;
   linkMessage: boolean;
   storyReplyOnly: boolean;
   repeatPolicy: RepeatPolicy;
@@ -82,6 +86,7 @@ interface AutomationsViewProps {
   onSaveAutomation: (auto: Automation) => Promise<Automation | void>;
   onPublishAutomation: (autoId: string) => Promise<void>;
   onCreateAutomation: () => Promise<Automation>;
+  onDeleteAutomation: (autoId: string) => Promise<void>;
 }
 
 const kindLabels: Record<StudioKind, string> = {
@@ -127,6 +132,10 @@ const defaultDraft = (kind: StudioKind): StudioDraft => ({
   postIds: [],
   destination: 'both',
   requireFollow: false,
+  followGateEnabled: false,
+  followGateMessage: 'برای دریافت این محتوا ابتدا پیج را فالو کنید و سپس روی دکمهٔ زیر بزنید.',
+  followGateButtonTitle: 'فالو کردم',
+  followGateSuccessMessage: 'ممنون که پیج را فالو کردید! حالا ادامهٔ راهنما برای شما ارسال می‌شود.',
   linkMessage: false,
   storyReplyOnly: false,
   repeatPolicy: 'keep_all',
@@ -160,12 +169,19 @@ const draftFromAutomation = (automation: Automation): StudioDraft => {
   const publicNode = nodes.find((node) => node.type === 'REPLY_PUBLIC_COMMENT');
   const questionNodes = nodes.filter((node) => node.type === 'ASK_FORM_FIELD');
   const destination = publicNode && privateNode ? 'both' : publicNode ? 'comment' : 'dm';
-  const privateVariants = privateNode?.config.responseVariants?.filter(Boolean) || [];
   const publicVariants = publicNode?.config.publicResponseVariants?.filter(Boolean) || [];
   const responseMedia = privateNode?.config.mediaUrl && privateNode.config.mediaType
     ? [{ type: privateNode.config.mediaType, url: privateNode.config.mediaUrl }]
     : draft.responseMedia;
   const responseButtons = privateNode?.config.buttons || draft.responseButtons;
+  const followGateNode = nodes.find((node) => node.config.followGateMode === 'claim');
+  const followSuccessNode = nodes.find((node) => node.id === 'node_follow_success');
+  const responseNode = followSuccessNode || privateNode;
+  const effectiveResponseMedia = responseNode?.config.mediaUrl && responseNode.config.mediaType
+    ? [{ type: responseNode.config.mediaType, url: responseNode.config.mediaUrl }]
+    : responseMedia;
+  const effectiveResponseButtons = responseNode?.config.buttons || responseButtons;
+  const effectivePrivateVariants = responseNode?.config.responseVariants?.filter(Boolean) || [];
 
   return {
     ...draft,
@@ -173,15 +189,19 @@ const draftFromAutomation = (automation: Automation): StudioDraft => {
     description: automation.description || draft.description,
     keywords: trigger?.config.keywords?.length ? trigger.config.keywords : automation.keywords,
     matchMode: trigger?.config.matchMode || draft.matchMode,
-    message: privateVariants[0] || privateNode?.config.text || publicNode?.config.publicReplyText || draft.message,
-    variants: privateVariants.length ? privateVariants : [privateNode?.config.text || draft.message],
+    message: effectivePrivateVariants[0] || responseNode?.config.text || publicNode?.config.publicReplyText || draft.message,
+    variants: effectivePrivateVariants.length ? effectivePrivateVariants : [responseNode?.config.text || draft.message],
     publicVariants: publicVariants.length ? publicVariants : [publicNode?.config.publicReplyText || draft.publicVariants[0]],
-    responseMedia,
-    responseButtons,
+    responseMedia: effectiveResponseMedia,
+    responseButtons: effectiveResponseButtons,
     postScope: trigger?.config.postScope || draft.postScope,
     postIds: trigger?.config.postIds || draft.postIds,
     destination,
     requireFollow: Boolean(trigger?.config.requireFollow),
+    followGateEnabled: trigger?.config.followGateMode === 'claim' || Boolean(followGateNode),
+    followGateMessage: followGateNode?.config.text || draft.followGateMessage,
+    followGateButtonTitle: followGateNode?.config.buttons?.[0]?.title || draft.followGateButtonTitle,
+    followGateSuccessMessage: followSuccessNode?.config.text || draft.followGateSuccessMessage,
     linkMessage: Boolean(trigger?.config.linkMessage),
     storyReplyOnly: Boolean(trigger?.config.storyReplyOnly),
     repeatPolicy: trigger?.config.repeatPolicy || draft.repeatPolicy,
@@ -230,6 +250,8 @@ const buildNodes = (kind: StudioKind, draft: StudioDraft): { nodes: FlowNode[]; 
     repeatLimit: draft.repeatLimit,
     followUpAutomationId: draft.followUpAutomationId,
     followUpCondition: draft.followUpCondition,
+    followGateMode: kind === 'dm' && draft.followGateEnabled ? 'claim' : undefined,
+    followGatePayload: kind === 'dm' && draft.followGateEnabled ? 'FOLLOW_CLAIMED' : undefined,
   }, 0);
   const nodes: FlowNode[] = [trigger];
   const edges: FlowEdge[] = [];
@@ -276,15 +298,37 @@ const buildNodes = (kind: StudioKind, draft: StudioDraft): { nodes: FlowNode[]; 
       buttons: draft.responseButtons,
     }, 2), 'دایرکت');
   } else if (kind === 'dm') {
-    connect(makeNode('node_private_reply', 'SEND_PRIVATE_REPLY', 'ارسال پاسخ دایرکت', {
-      text: draft.message,
-      responseVariants: draft.variants,
-      quickReplies: [],
-      linkMessage: draft.linkMessage,
-      mediaUrl: draft.responseMedia[0]?.url,
-      mediaType: draft.responseMedia[0]?.type,
-      buttons: draft.responseButtons,
-    }, 1), 'پاسخ');
+    if (draft.followGateEnabled) {
+      const followGateNode = makeNode('node_follow_gate', 'SEND_PRIVATE_REPLY', 'درخواست فالو', {
+        followGateMode: 'claim',
+        followGatePayload: 'FOLLOW_CLAIMED',
+        text: draft.followGateMessage,
+        buttons: [{ title: draft.followGateButtonTitle || 'فالو کردم', payload: 'FOLLOW_CLAIMED' }],
+      }, 1);
+      connect(followGateNode, 'درخواست فالو');
+      const successNode = makeNode('node_follow_success', 'SEND_PRIVATE_REPLY', 'پاسخ بعد از تأیید فالو', {
+        followGateMode: 'verified',
+        text: draft.followGateSuccessMessage,
+        responseVariants: draft.variants,
+        quickReplies: [],
+        linkMessage: draft.linkMessage,
+        mediaUrl: draft.responseMedia[0]?.url,
+        mediaType: draft.responseMedia[0]?.type,
+        buttons: draft.responseButtons,
+      }, 2);
+      nodes.push(successNode);
+      edges.push({ id: 'edge_follow_success', sourceNodeId: followGateNode.id, targetNodeId: successNode.id, label: 'پس از فالو', conditionValue: 'FOLLOW_CLAIMED' });
+    } else {
+      connect(makeNode('node_private_reply', 'SEND_PRIVATE_REPLY', 'ارسال پاسخ دایرکت', {
+        text: draft.message,
+        responseVariants: draft.variants,
+        quickReplies: [],
+        linkMessage: draft.linkMessage,
+        mediaUrl: draft.responseMedia[0]?.url,
+        mediaType: draft.responseMedia[0]?.type,
+        buttons: draft.responseButtons,
+      }, 1), 'پاسخ');
+    }
   }
   return { nodes, edges, triggerType };
 };
@@ -316,6 +360,7 @@ export const AutomationsView: React.FC<AutomationsViewProps> = ({
   onSaveAutomation,
   onPublishAutomation,
   onCreateAutomation,
+  onDeleteAutomation,
 }) => {
   const [selectedAutoId, setSelectedAutoId] = useState(automations[0]?.id || '');
   const [isBuilding, setIsBuilding] = useState(false);
@@ -331,6 +376,7 @@ export const AutomationsView: React.FC<AutomationsViewProps> = ({
   const [mediaLoading, setMediaLoading] = useState(false);
   const [mediaError, setMediaError] = useState('');
   const [mediaReloadKey, setMediaReloadKey] = useState(0);
+  const [deletingAutoId, setDeletingAutoId] = useState('');
 
   const selectedAuto = automations.find((auto) => auto.id === selectedAutoId);
 
@@ -415,6 +461,23 @@ export const AutomationsView: React.FC<AutomationsViewProps> = ({
   const publish = async () => {
     await saveDraft();
     if (selectedAuto) await onPublishAutomation(selectedAuto.id);
+  };
+
+  const deleteScenario = async (automation: Automation) => {
+    if (!window.confirm(`سناریوی «${automation.name}» حذف شود؟ این عملیات قابل بازگشت نیست.`)) return;
+    setDeletingAutoId(automation.id);
+    setError('');
+    try {
+      await onDeleteAutomation(automation.id);
+      if (selectedAutoId === automation.id) {
+        setSelectedAutoId('');
+        setIsBuilding(false);
+      }
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : 'حذف سناریو ناموفق بود.');
+    } finally {
+      setDeletingAutoId('');
+    }
   };
 
   const runTest = () => {
@@ -512,7 +575,7 @@ export const AutomationsView: React.FC<AutomationsViewProps> = ({
                 return <article className="direct-scenario-row" key={automation.id}>
                   <span className="direct-scenario-icon"><Icon size={19} /></span>
                   <div className="direct-scenario-copy"><div className="d-flex align-items-center gap-2 flex-wrap"><strong>{automation.name}</strong><span className={`status-chip ${automation.status === 'active' ? 'status-chip-success' : 'status-chip-muted'}`}><span className="direct-status-dot" />{automation.status === 'active' ? 'فعال' : 'پیش‌نویس'}</span></div><p>{automation.description || kindDescriptions[kind]}</p><div className="direct-scenario-meta"><span>{kindLabels[kind]}</span><span>{automation.keywords.slice(0, 3).join(' · ') || 'بدون کلمهٔ فعال‌ساز'}</span><span>{automation.runCount.toLocaleString('fa-IR')} اجرا</span></div></div>
-                  <div className="direct-scenario-actions"><button type="button" className="btn btn-outline-secondary direct-edit-btn" onClick={() => startEditing(automation)}>ویرایش</button><button type="button" className="btn btn-primary direct-edit-btn" onClick={() => startEditing(automation)}><ArrowLeft size={15} /> جزئیات</button></div>
+                  <div className="direct-scenario-actions"><button type="button" className="btn btn-outline-secondary direct-edit-btn" onClick={() => startEditing(automation)}>ویرایش</button><button type="button" className="btn btn-primary direct-edit-btn" onClick={() => startEditing(automation)}><ArrowLeft size={15} /> جزئیات</button><button type="button" className="btn direct-delete-btn" onClick={() => deleteScenario(automation)} disabled={deletingAutoId === automation.id} aria-label={`حذف سناریوی ${automation.name}`}><Trash2 size={15} /> {deletingAutoId === automation.id ? 'در حال حذف...' : 'حذف'}</button></div>
                 </article>;
               })}
             </div>
@@ -534,16 +597,19 @@ export const AutomationsView: React.FC<AutomationsViewProps> = ({
               <ResponsivePreview
                 variant={studioKind === 'comment' ? 'comment' : studioKind === 'form' ? 'form' : 'dm'}
                 title={draft.name || kindLabels[studioKind]}
-                message={studioKind === 'form' ? draft.formCompletionMessage : studioKind === 'followup' ? draft.followUpMessage : draft.variants[0] || draft.message}
+                message={studioKind === 'form' ? draft.formCompletionMessage : studioKind === 'followup' ? draft.followUpMessage : draft.followGateEnabled ? draft.followGateMessage : draft.variants[0] || draft.message}
                 keyword={draft.keywords[0] || 'سلام'}
                 formFields={draft.questions.map((question) => question.label)}
                 media={draft.responseMedia}
-                buttons={draft.responseButtons}
+                buttons={draft.followGateEnabled ? [{ title: draft.followGateButtonTitle, payload: 'FOLLOW_CLAIMED' }, ...draft.responseButtons] : draft.responseButtons}
                 onAddText={() => addVariant()}
                 onAddMedia={(media) => updateDraft('responseMedia', [...draft.responseMedia.filter((item) => item.type !== media.type), media])}
                 onAddButton={(button) => updateDraft('responseButtons', [...draft.responseButtons, button])}
                 onRemoveMedia={(type) => updateDraft('responseMedia', draft.responseMedia.filter((item) => item.type !== type))}
-                onRemoveButton={(index) => updateDraft('responseButtons', draft.responseButtons.filter((_, itemIndex) => itemIndex !== index))}
+                onRemoveButton={(index) => {
+                  const responseIndex = draft.followGateEnabled ? index - 1 : index;
+                  if (responseIndex >= 0) updateDraft('responseButtons', draft.responseButtons.filter((_, itemIndex) => itemIndex !== responseIndex));
+                }}
               />
               <div className="direct-preview-tip"><Sparkles size={15} /><span>هر تغییر را ابتدا اینجا بررسی کنید؛ انتشار از سمت Meta جدا از پیش‌نمایش انجام می‌شود.</span></div>
             </aside>
@@ -563,6 +629,8 @@ export const AutomationsView: React.FC<AutomationsViewProps> = ({
               </section>
 
               {studioKind !== 'form' && studioKind !== 'followup' && <section className="direct-panel"><PanelHeading label="تنظیمات پاسخ" title="پیام را ساده، انسانی و متنوع نگه دارید" number="۰۳" /><VariantEditor label="پاسخ‌های متنوع دایرکت" values={draft.variants} onAdd={() => addVariant()} onChange={(index, value) => updateVariant(index, value)} onRemove={(index) => removeVariant(index)} /><div className="direct-helper"><Sparkles size={16} /><span>برای هر اجرا یکی از متن‌ها به‌صورت چرخشی انتخاب می‌شود تا پاسخ‌ها تکراری و ماشینی به نظر نرسند.</span></div>{studioKind === 'dm' && <ToggleField label="لینک یا دکمهٔ مشاهدهٔ خدمات اضافه شود" checked={draft.linkMessage} onChange={(value) => updateDraft('linkMessage', value)} />}</section>}
+
+              {studioKind === 'dm' && <FollowGateEditor draft={draft} updateDraft={updateDraft} />}
 
               {studioKind === 'comment' && <section className="direct-panel"><PanelHeading label="پاسخ عمومی" title="پاسخ زیر همان پست" number="۰۴" /><VariantEditor label="پاسخ‌های متنوع زیر کامنت" values={draft.publicVariants} onAdd={() => addVariant(true)} onChange={(index, value) => updateVariant(index, value, true)} onRemove={(index) => removeVariant(index, true)} /></section>}
 
@@ -600,6 +668,8 @@ interface CommentActivationProps { draft: StudioDraft; updateDraft: <K extends k
 const CommentActivation: React.FC<CommentActivationProps> = ({ draft, updateDraft, media, mediaLoading, mediaError, onReloadMedia }) => <div className="direct-comment-options"><SelectField label="محدودهٔ پست" value={draft.postScope} onChange={(value) => updateDraft('postScope', value as StudioDraft['postScope'])} options={[['all', 'روی همهٔ پست‌ها'], ['selected', 'فقط پست‌های انتخاب‌شده'], ['live', 'فقط لایو']]} />{draft.postScope === 'selected' && <div className="direct-post-picker"><div className="direct-field-label-row"><div><span className="direct-label">انتخاب پست</span><small>فقط پست‌های واقعی اکانت متصل نمایش داده می‌شوند</small></div><span className="direct-post-count">{draft.postIds.length} انتخاب شده</span></div>{mediaLoading && <div className="direct-post-state"><span className="direct-loading-dot" /> در حال دریافت پست‌های پیج...</div>}{!mediaLoading && mediaError && <div className="direct-post-state is-error"><span>{mediaError}</span><button type="button" className="direct-inline-btn" onClick={onReloadMedia}>تلاش دوباره</button></div>}{!mediaLoading && !mediaError && media.length === 0 && <div className="direct-post-state">برای این اکانت پستی از API دریافت نشد.</div>}{!mediaLoading && !mediaError && media.length > 0 && <div className="direct-post-grid">{media.map((post) => { const selected = draft.postIds.includes(post.id); const title = post.caption?.split('\n')[0]?.trim() || (post.mediaProductType === 'REELS' ? 'ریلز اینستاگرام' : 'پست اینستاگرام'); const meta = `${post.mediaProductType === 'REELS' ? 'ریلز' : post.mediaType === 'VIDEO' ? 'ویدیو' : 'پست'}${post.timestamp ? ` · ${new Date(post.timestamp).toLocaleDateString('fa-IR')}` : ''}`; return <button type="button" key={post.id} className={`direct-post-card ${selected ? 'is-selected' : ''}`} onClick={() => updateDraft('postIds', selected ? draft.postIds.filter((id) => id !== post.id) : [...draft.postIds, post.id])}>{post.thumbnailUrl || post.mediaUrl ? <img src={post.thumbnailUrl || post.mediaUrl} alt={title} loading="lazy" /> : <span className="direct-post-placeholder"><ImageIcon size={18} /></span>}<span><strong>{title}</strong><small>{meta}</small></span>{selected && <Check size={15} />}</button>; })}</div>}</div>}<div className="row g-3"><div className="col-12 col-md-6"><SelectField label="پاسخ در کجا ارسال شود؟" value={draft.destination} onChange={(value) => updateDraft('destination', value as CommentDestination)} options={[['dm', 'فقط دایرکت'], ['comment', 'فقط زیر کامنت'], ['both', 'دایرکت و کامنت']]} /></div><div className="col-12 col-md-6"><ToggleField label="فقط برای دنبال‌کننده‌ها" checked={draft.requireFollow} onChange={(value) => updateDraft('requireFollow', value)} /></div></div><div className="direct-helper"><UsersRound size={16} /><span>این گزینه فقط وقتی اجرا را محدود می‌کند که وضعیت دنبال‌کردن در رویداد Meta در دسترس باشد؛ سیستم به‌صورت خودکار کسی را فالو نمی‌کند.</span></div></div>;
 
 interface FormQuestionsProps { draft: StudioDraft; updateDraft: <K extends keyof StudioDraft>(key: K, value: StudioDraft[K]) => void; }
+interface FollowGateEditorProps { draft: StudioDraft; updateDraft: <K extends keyof StudioDraft>(key: K, value: StudioDraft[K]) => void; }
+const FollowGateEditor: React.FC<FollowGateEditorProps> = ({ draft, updateDraft }) => <section className="direct-panel direct-follow-gate-panel"><PanelHeading label="شرط فالو" title="قبل از ارسال محتوا، فالو را تأیید کنید" number="۰۴" /><ToggleField label="ابتدا از مخاطب بخواه پیج را فالو کند" checked={draft.followGateEnabled} onChange={(value) => updateDraft('followGateEnabled', value)} />{draft.followGateEnabled && <div className="direct-follow-gate-fields"><label className="direct-label">متن راهنمای بالای دکمه<textarea className="form-control direct-control" rows={3} value={draft.followGateMessage} onChange={(event) => updateDraft('followGateMessage', event.target.value)} placeholder="مثلاً اول پیج را فالو کنید و سپس دکمه را بزنید." /></label><label className="direct-label">عنوان دکمهٔ تأیید فالو<input className="form-control direct-control" value={draft.followGateButtonTitle} onChange={(event) => updateDraft('followGateButtonTitle', event.target.value)} placeholder="فالو کردم" /></label><label className="direct-label">پاسخ بعد از تأیید فالو<textarea className="form-control direct-control" rows={3} value={draft.followGateSuccessMessage} onChange={(event) => updateDraft('followGateSuccessMessage', event.target.value)} placeholder="پیام یا سناریوی موفقیت را بنویسید." /></label><div className="direct-helper"><UsersRound size={16} /><span>با کلیک روی دکمه، وضعیت دنبال‌کردن از رویداد Meta بررسی می‌شود. اگر Meta وضعیت را تأیید کند، پاسخ موفقیت و محتوای سناریو ارسال می‌شود.</span></div></div>}</section>;
 const FormQuestions: React.FC<FormQuestionsProps> = ({ draft, updateDraft }) => <section className="direct-panel"><PanelHeading label="تنظیمات فرم" title="سؤال‌ها را کوتاه و مرحله‌ای بچینید" number="۰۳" /><div className="row g-3 mb-3"><div className="col-12 col-md-6"><label className="direct-label">عنوان فرم</label><input className="form-control direct-control" value={draft.formTitle} onChange={(event) => updateDraft('formTitle', event.target.value)} /></div><div className="col-12 col-md-6"><label className="direct-label">متن دکمهٔ خروج</label><input className="form-control direct-control" value={draft.formExitLabel} onChange={(event) => updateDraft('formExitLabel', event.target.value)} /></div></div><div className="direct-question-list">{draft.questions.map((question, index) => <article className="direct-question-card" key={question.id}><span className="direct-question-index">{index + 1}</span><div><strong>{question.label}</strong><p>{question.prompt}</p><small>{question.fieldType} · {question.required ? 'الزامی' : 'اختیاری'}</small></div><button type="button" onClick={() => updateDraft('questions', draft.questions.filter((item) => item.id !== question.id))} aria-label="حذف سؤال"><Trash2 size={15} /></button></article>)}</div><button type="button" className="direct-add-question" onClick={() => updateDraft('questions', [...draft.questions, makeQuestion(draft.questions.length)])}><Plus size={16} /> افزودن سؤال</button><label className="direct-label mt-3">پیام تکمیل فرم</label><textarea className="form-control direct-control" rows={3} value={draft.formCompletionMessage} onChange={(event) => updateDraft('formCompletionMessage', event.target.value)} /></section>;
 
 interface FollowUpActivationProps { draft: StudioDraft; automations: Automation[]; updateDraft: <K extends keyof StudioDraft>(key: K, value: StudioDraft[K]) => void; }

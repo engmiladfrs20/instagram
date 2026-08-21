@@ -98,7 +98,7 @@ export const ResponsivePreview: React.FC<ResponsivePreviewProps> = ({
   ));
 
   const renderButtons = () => buttons.map((button, index) => {
-    const removeControl = onRemoveButton
+    const removeControl = onRemoveButton && button.payload !== 'FOLLOW_CLAIMED'
       ? <button type="button" onClick={() => onRemoveButton(index)} aria-label={`حذف دکمه ${button.title}`}><X size={10} /></button>
       : null;
     return button.url

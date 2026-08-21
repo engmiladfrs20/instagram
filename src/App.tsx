@@ -190,6 +190,16 @@ export default function App() {
     return data.automation as Automation;
   };
 
+  const handleDeleteAutomation = async (autoId: string) => {
+    try {
+      await requestJson(`/api/v1/automations/${autoId}`, { method: 'DELETE' });
+      setAutomations((prev) => prev.filter((automation) => automation.id !== autoId));
+    } catch (deleteError) {
+      console.error(deleteError);
+      throw deleteError;
+    }
+  };
+
   // Handler: Publish Automation
   const handlePublishAutomation = async (autoId: string) => {
     try {
@@ -433,6 +443,7 @@ export default function App() {
                 onSaveAutomation={handleSaveAutomation}
                 onPublishAutomation={handlePublishAutomation}
                 onCreateAutomation={handleCreateAutomation}
+                onDeleteAutomation={handleDeleteAutomation}
               />
             )}
 

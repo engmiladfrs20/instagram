@@ -188,6 +188,8 @@ export interface FlowNode {
     followUpAutomationId?: string;
     followUpCondition?: 'always' | 'no_reply';
     delayMinutes?: number;
+    followGateMode?: 'claim' | 'verified';
+    followGatePayload?: string;
   };
   position: { x: number; y: number };
 }

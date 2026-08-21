@@ -109,6 +109,24 @@ function localInstagramOAuthRedirectUri(): string {
   return `${appOrigin}/api/v1/instagram/oauth/callback`;
 }
 
+function isSyntheticContact(contact: Contact): boolean {
+  const id = String(contact.id || '').toLowerCase();
+  const username = String(contact.username || '').toLowerCase();
+  return id.startsWith('igs_')
+    || ['cnt_mahsa', 'cnt_sara', 'cnt_reza'].includes(id)
+    || ['mahsa_style_blog', 'sara_krm', 'reza_fashion_store'].includes(username);
+}
+
+function removeSyntheticInboxData(): void {
+  const syntheticIds = new Set(contacts.filter(isSyntheticContact).map((contact) => contact.id));
+  if (!syntheticIds.size) return;
+  const conversationIds = new Set(conversations.filter((conversation) => syntheticIds.has(conversation.contactId)).map((conversation) => conversation.id));
+  contacts = contacts.filter((contact) => !syntheticIds.has(contact.id));
+  conversations = conversations.filter((conversation) => !conversationIds.has(conversation.id));
+  messages = messages.filter((message) => !conversationIds.has(message.conversationId));
+  persistState();
+}
+
 function normalizeStateReferences() {
   const workspaceId = workspace.id;
   const instagramAccountId = instagramAccount.id;
@@ -960,6 +978,7 @@ app.post('/api/v1/automations/:id/publish', (req, res) => {
 
 // Conversations & CRM
 app.get('/api/v1/conversations', (_req, res) => {
+  removeSyntheticInboxData();
   res.json({ conversations });
 });
 

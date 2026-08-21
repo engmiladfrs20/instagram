@@ -63,7 +63,7 @@ export const INITIAL_INSTAGRAM_ACCOUNT: InstagramAccount = {
   metaIgUserId: '17841444316653291',
   username: 'usdhunter.ir',
   displayName: 'usdhunter.ir',
-  profilePicUrl: 'https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?auto=format&fit=crop&w=200&q=80',
+  profilePicUrl: undefined,
   accountType: 'BUSINESS',
   authMode: 'instagram_login',
   graphHost: 'graph.instagram.com',
@@ -413,7 +413,7 @@ export const INITIAL_CONTACTS: Contact[] = [
     igScopedUserId: 'igs_998877665544',
     username: 'mahsa_style_blog',
     displayName: 'مهسا احمدی',
-    avatarUrl: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=200&q=80',
+    avatarUrl: undefined,
     email: 'mahsa.ahmadi@gmail.com',
     phone: '09129876543',
     customFields: {
@@ -433,7 +433,7 @@ export const INITIAL_CONTACTS: Contact[] = [
     igScopedUserId: 'igs_112233445566',
     username: 'sara_krm',
     displayName: 'سارا کریمی',
-    avatarUrl: 'https://images.unsplash.com/photo-1517841905240-472988babdf9?auto=format&fit=crop&w=200&q=80',
+    avatarUrl: undefined,
     email: 'sara.krm@yahoo.com',
     phone: '09351112233',
     customFields: {
@@ -452,7 +452,7 @@ export const INITIAL_CONTACTS: Contact[] = [
     igScopedUserId: 'igs_445566778899',
     username: 'reza_fashion_store',
     displayName: 'رضا مرادی (همکار)',
-    avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=200&q=80',
+    avatarUrl: undefined,
     phone: '09123334455',
     customFields: {
       notes: 'درخواست همکاری عمده و تخفیف تعداد بالا',

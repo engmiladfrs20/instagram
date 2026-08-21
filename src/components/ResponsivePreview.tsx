@@ -71,7 +71,11 @@ export const ResponsivePreview: React.FC<ResponsivePreviewProps> = ({
     if (composerKind === 'button') {
       const titleText = buttonTitle.trim();
       if (!titleText || !onAddButton) return;
-      onAddButton({ title: titleText, url: buttonUrl.trim() || undefined, payload: titleText });
+      const normalizedTitle = titleText.replace(/\u200c/g, '').replace(/\s+/g, ' ').trim().toLocaleLowerCase('fa-IR');
+      const payload = normalizedTitle.includes('فالو کردم') || normalizedTitle.includes('فالو دارم') || normalizedTitle === 'i follow'
+        ? 'FOLLOW_CLAIMED'
+        : titleText;
+      onAddButton({ title: titleText, url: buttonUrl.trim() || undefined, payload });
       setButtonTitle('');
       setButtonUrl('');
       setComposerKind(null);

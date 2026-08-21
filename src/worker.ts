@@ -27,8 +27,14 @@ import {
   AuditLog,
   WorkspaceMember,
 } from './types';
-import { executableNodes, IncomingContext, matchesAutomation, runtimeVersion } from './lib/automationEngine';
-import { listInstagramMedia, sendInstagramMessage } from './lib/metaClient';
+import { executableNodes, IncomingContext, matchesAutomation, normalizeText, runtimeVersion } from './lib/automationEngine';
+import {
+  getInstagramUserProfile,
+  listInstagramConversationMessages,
+  listInstagramConversations,
+  listInstagramMedia,
+  sendInstagramMessage,
+} from './lib/metaClient';
 
 type Env = Cloudflare.Env & {
   META_APP_SECRET?: string;
@@ -531,6 +537,171 @@ async function getInstagramAccessToken(env: Env): Promise<string | undefined> {
   return workspace.id === INITIAL_WORKSPACE.id ? env.INSTAGRAM_ACCESS_TOKEN?.trim() : undefined;
 }
 
+function isSyntheticContact(contact: Contact): boolean {
+  return ['cnt_mahsa', 'cnt_sara', 'cnt_reza'].includes(contact.id)
+    || contact.igScopedUserId.startsWith('igs_')
+    || ['mahsa_style_blog', 'sara_krm', 'reza_fashion_store'].includes(contact.username);
+}
+
+function removeSyntheticConversationData() {
+  const syntheticContactIds = new Set(contacts.filter(isSyntheticContact).map((contact) => contact.id));
+  if (!syntheticContactIds.size) return false;
+  contacts = contacts.filter((contact) => !syntheticContactIds.has(contact.id));
+  const removedConversationIds = new Set(conversations.filter((conversation) => syntheticContactIds.has(conversation.contactId)).map((conversation) => conversation.id));
+  conversations = conversations.filter((conversation) => !removedConversationIds.has(conversation.id));
+  messages = messages.filter((message) => !removedConversationIds.has(message.conversationId));
+  return true;
+}
+
+function findOrCreateMetaContact(participant: any, now: string): Contact {
+  const id = String(participant?.id || '');
+  let contact = contacts.find((item) => item.igScopedUserId === id);
+  if (!contact) {
+    contact = {
+      id: `cnt_${crypto.randomUUID()}`,
+      workspaceId: workspace.id,
+      instagramAccountId: instagramAccount.id,
+      igScopedUserId: id,
+      username: String(participant?.username || `user_${id.slice(-8) || 'unknown'}`),
+      displayName: String(participant?.name || participant?.username || `Instagram user ${id.slice(-6)}`),
+      avatarUrl: participant?.profile_picture_url ? String(participant.profile_picture_url) : undefined,
+      customFields: { data_source: 'instagram_conversations_api' },
+      tags: [],
+      firstSeenAt: now,
+      lastSeenAt: now,
+      leadStatus: 'new',
+      leadScore: 50,
+    };
+    contacts.unshift(contact);
+  } else {
+    contact.lastSeenAt = now;
+    if (participant?.username) contact.username = String(participant.username);
+    if (participant?.name) contact.displayName = String(participant.name);
+    if (participant?.profile_picture_url) contact.avatarUrl = String(participant.profile_picture_url);
+    contact.customFields = { ...contact.customFields, data_source: 'instagram_conversations_api' };
+  }
+  return contact;
+}
+
+function messageFromMeta(
+  metaMessage: any,
+  conversationId: string,
+  contact: Contact,
+  now: string,
+): Message | null {
+  const externalMessageId = String(metaMessage?.id || '');
+  if (!externalMessageId) return null;
+  const fromId = String(metaMessage?.from?.id || '');
+  const isInbound = fromId !== String(instagramAccount.metaIgUserId);
+  const text = typeof metaMessage?.message === 'string' ? metaMessage.message : '';
+  const attachments = Array.isArray(metaMessage?.attachments?.data) ? metaMessage.attachments.data : [];
+  const firstAttachment = attachments[0];
+  const mediaUrl = firstAttachment?.image_data?.url || firstAttachment?.video_data?.url;
+  const mediaType = firstAttachment?.type === 'video' ? 'video' : firstAttachment?.type === 'image' ? 'image' : undefined;
+  const createdAt = metaMessage?.created_time || now;
+  return {
+    id: `msg_meta_${externalMessageId}`,
+    workspaceId: workspace.id,
+    instagramAccountId: instagramAccount.id,
+    conversationId,
+    externalMessageId,
+    direction: isInbound ? 'inbound' : 'outbound',
+    messageType: 'text',
+    textBody: text || undefined,
+    content: { text: text || undefined, mediaUrl, mediaType },
+    status: isInbound ? 'received' : 'sent',
+    policyBasis: 'instagram_conversations_api',
+    correlationId: `meta_sync_${externalMessageId}`,
+    receivedAt: isInbound ? createdAt : undefined,
+    sentAt: isInbound ? undefined : createdAt,
+    createdAt,
+  };
+}
+
+async function refreshLiveConversations(env: Env): Promise<{ source: 'meta' | 'stored'; synced: number; notice?: string }> {
+  const accessToken = await getInstagramAccessToken(env);
+  if (!accessToken || !instagramAccount.metaIgUserId) {
+    return { source: 'stored', synced: 0, notice: 'Instagram account token is not configured.' };
+  }
+
+  try {
+    const result = await listInstagramConversations({
+      accessToken,
+      graphHost: instagramAccount.graphHost,
+      graphVersion: instagramAccount.graphVersion,
+      instagramUserId: instagramAccount.metaIgUserId,
+      limit: 25,
+    });
+    const now = new Date().toISOString();
+    const liveConversationIds = new Set<string>();
+    for (const metaConversation of result.data || []) {
+      const participants = metaConversation?.participants?.data || [];
+      const participant = participants.find((item: any) => String(item.id) !== String(instagramAccount.metaIgUserId)) || participants[0];
+      if (!participant?.id) continue;
+      const contact = findOrCreateMetaContact(participant, now);
+      const stableConversationId = `meta_conv_${String(metaConversation.id)}`;
+      liveConversationIds.add(stableConversationId);
+      let conversation = conversations.find((item) => item.id === stableConversationId || item.contactId === contact.id);
+      if (!conversation) {
+        conversation = {
+          id: stableConversationId,
+          workspaceId: workspace.id,
+          instagramAccountId: instagramAccount.id,
+          contactId: contact.id,
+          contact,
+          status: 'open',
+          mode: 'automation',
+          standardWindowOpenUntil: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+          lastInboundAt: new Date(0).toISOString(),
+          lastOutboundAt: new Date(0).toISOString(),
+          lastMessageAt: metaConversation.updated_time || now,
+          unreadCount: 0,
+          createdAt: now,
+        };
+        conversations.unshift(conversation);
+      } else {
+        conversation.contact = contact;
+        conversation.contactId = contact.id;
+        conversation.lastMessageAt = metaConversation.updated_time || conversation.lastMessageAt;
+      }
+
+      const messageResult = await listInstagramConversationMessages({
+        accessToken,
+        graphHost: instagramAccount.graphHost,
+        graphVersion: instagramAccount.graphVersion,
+        conversationId: String(metaConversation.id),
+        limit: 50,
+      });
+      const syncedMessages = (messageResult.data || [])
+        .map((item) => messageFromMeta(item, conversation!.id, contact, now))
+        .filter((item): item is Message => Boolean(item));
+      for (const syncedMessage of syncedMessages) {
+        if (!messages.some((item) => item.externalMessageId === syncedMessage.externalMessageId)) messages.push(syncedMessage);
+      }
+      const latest = syncedMessages.slice().sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0];
+      if (latest) {
+        conversation.lastMessageAt = latest.createdAt;
+        conversation.lastMessagePreview = latest.textBody || (latest.content.mediaType ? `رسانهٔ ${latest.content.mediaType}` : 'پیام اینستاگرام');
+        if (latest.direction === 'inbound') {
+          conversation.lastInboundAt = latest.createdAt;
+          conversation.standardWindowOpenUntil = new Date(Date.parse(latest.createdAt) + 24 * 3600 * 1000).toISOString();
+        } else conversation.lastOutboundAt = latest.createdAt;
+      }
+    }
+
+    // Remove only known demo records. Webhook-created real conversations remain
+    // visible when the Conversations API has no row for them yet.
+    const removedSynthetic = removeSyntheticConversationData();
+    if (removedSynthetic) await persistWorkerState(env);
+    return { source: 'meta', synced: liveConversationIds.size };
+  } catch (error) {
+    console.log(JSON.stringify({ event: 'instagram_conversation_sync_failed', workspaceId: workspace.id, error: error instanceof Error ? error.message : String(error) }));
+    const removedSynthetic = removeSyntheticConversationData();
+    if (removedSynthetic) await persistWorkerState(env);
+    return { source: 'stored', synced: 0, notice: error instanceof Error ? error.message : 'Instagram conversations could not be loaded.' };
+  }
+}
+
 function instagramOAuthRedirectUri(env: Env): string {
   return `${(env.APP_ORIGIN || 'https://instaflow-worker.m-farokhi2729.workers.dev').replace(/\/$/, '')}/api/v1/instagram/oauth/callback`;
 }
@@ -810,10 +981,29 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
   const messageValue = value.message || value.messages?.[0];
   const isComment = field === 'comments';
   const replyPayload = messageValue?.quick_reply?.payload || messageValue?.postback?.payload;
-  const text = String(isComment ? value.text || '' : messageValue?.text || value.text || '');
-  const fromUser = value.from || value.sender || messageValue?.from || { id: `igs_${crypto.randomUUID()}`, username: 'sample_user' };
+  const text = String(isComment ? value.text || '' : messageValue?.text || value.text || messageValue?.postback?.title || replyPayload || '');
+  let fromUser: any = value.from || value.sender || messageValue?.from || { id: `igs_${crypto.randomUUID()}`, username: 'sample_user' };
   const externalMessageId = value.id || messageValue?.mid || `msg_${crypto.randomUUID()}`;
   const now = new Date().toISOString();
+
+  // Webhook payloads often contain only the scoped user id. Enrich the
+  // contact from Meta so the inbox never invents a username or avatar.
+  if (!isComment && fromUser?.id && (!fromUser.username || String(fromUser.username).startsWith('user_'))) {
+    try {
+      const accessToken = await getInstagramAccessToken(env);
+      if (accessToken) {
+        const profile = await getInstagramUserProfile({
+          accessToken,
+          graphHost: instagramAccount.graphHost,
+          graphVersion: instagramAccount.graphVersion,
+          userId: String(fromUser.id),
+        });
+        fromUser = { ...fromUser, ...profile, id: String(fromUser.id) };
+      }
+    } catch (error) {
+      console.log(JSON.stringify({ event: 'instagram_sender_profile_lookup_failed', error: error instanceof Error ? error.message : String(error) }));
+    }
+  }
 
   if (isComment) {
     const createdTimeSec = Number(value.created_time || Math.floor(Date.now() / 1000));
@@ -854,6 +1044,9 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
     contacts.unshift(contact);
   } else {
     contact.lastSeenAt = now;
+    if (fromUser.username) contact.username = String(fromUser.username);
+    if (fromUser.name) contact.displayName = String(fromUser.name);
+    if (fromUser.profile_picture_url) contact.avatarUrl = String(fromUser.profile_picture_url);
   }
 
   let conversation = conversations.find((item) => item.contactId === contact!.id);
@@ -902,6 +1095,37 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
   if (isComment) analytics.totalCommentsReceived += 1;
   if (conversation.mode === 'human') return { blocked: false };
 
+  const isFollowConfirmation = !isComment && (
+    String(replyPayload || '').toUpperCase() === 'FOLLOW_CLAIMED'
+    || ['فالو کردم', 'فالو دارم', 'followed', 'i follow'].includes(normalizeText(text))
+  );
+  let followStatus: 'verified' | 'not_verified' | 'unavailable' = 'unavailable';
+  if (isFollowConfirmation) {
+    try {
+      const accessToken = await getInstagramAccessToken(env);
+      if (accessToken) {
+        const profile = await getInstagramUserProfile({
+          accessToken,
+          graphHost: instagramAccount.graphHost,
+          graphVersion: instagramAccount.graphVersion,
+          userId: String(fromUser.id),
+          includeFollowStatus: true,
+        });
+        const followValue = typeof profile.is_user_follow_business === 'boolean'
+          ? profile.is_user_follow_business
+          : typeof profile.is_business_follow_user === 'boolean'
+            ? profile.is_business_follow_user
+            : undefined;
+        followStatus = followValue === true ? 'verified' : followValue === false ? 'not_verified' : 'unavailable';
+      }
+    } catch (error) {
+      console.log(JSON.stringify({ event: 'instagram_follow_status_unavailable', userId: String(fromUser.id), error: error instanceof Error ? error.message : String(error) }));
+    }
+    contact.customFields.follow_status = followStatus;
+    if (!contact.tags.includes('follow_confirmation_received')) contact.tags.push('follow_confirmation_received');
+    if (followStatus === 'verified' && !contact.tags.includes('instagram_follower_verified')) contact.tags.push('instagram_follower_verified');
+  }
+
   const context: IncomingContext = {
     trigger: isComment ? 'COMMENT_CREATED' : replyPayload ? 'QUICK_REPLY_SELECTED' : 'DM_RECEIVED',
     text,
@@ -910,8 +1134,12 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
     contactTags: contact.tags,
     windowOpen: Date.parse(conversation.standardWindowOpenUntil) >= Date.now(),
     mediaId: isComment ? String(value?.media?.id || '') : undefined,
-    isFollower: typeof fromUser.is_follower === 'boolean' ? fromUser.is_follower : undefined,
+    isFollower: followStatus === 'verified' ? true : followStatus === 'not_verified' ? false : typeof fromUser.is_follower === 'boolean' ? fromUser.is_follower : undefined,
   };
+  if (isFollowConfirmation && followStatus === 'not_verified') {
+    await deliverAiReply(env, 'برای دریافت این محتوا ابتدا پیج را فالو کن و سپس روی «فالو کردم» بزن.', String(fromUser.id), conversation, eventId);
+    return { blocked: false };
+  }
   const automation = automations
     .filter((item) => matchesAutomation(item, context))
     .sort((left, right) => left.priority - right.priority || left.id.localeCompare(right.id))[0];
@@ -980,7 +1208,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
     return values[Math.floor(Math.random() * values.length)];
   };
 
-  for (const node of executableNodes(runtimeVersion(automation), context)) {
+  for (const node of executableNodes(runtimeVersion(automation, context), context)) {
     if (node.type === 'REPLY_PUBLIC_COMMENT' && isComment && node.config.commentReplyDestination !== 'dm') {
       const publicText = chooseVariant(node.config.publicResponseVariants, node.config.publicReplyText);
       if (publicText) await recordOutbound('public_comment_reply', { text: publicText }, 'public_comment_moderation');
@@ -1299,7 +1527,7 @@ export default {
         const longToken = await longTokenResponse.json<any>().catch(() => ({}));
         const accessToken = longToken.access_token || shortToken.access_token;
         if (!longTokenResponse.ok || !accessToken) throw new Error(longToken?.error?.message || `Long-lived token exchange failed (${longTokenResponse.status})`);
-        const profileResponse = await fetchWithTimeout(`https://graph.instagram.com/${instagramAccount.graphVersion}/me?fields=id,username,account_type,user_id&access_token=${encodeURIComponent(accessToken)}`);
+        const profileResponse = await fetchWithTimeout(`https://graph.instagram.com/${instagramAccount.graphVersion}/me?fields=id,username,name,profile_picture_url,account_type,user_id&access_token=${encodeURIComponent(accessToken)}`);
         const profile = await profileResponse.json<any>().catch(() => ({}));
         if (!profileResponse.ok || !profile.username) throw new Error(profile?.error?.message || `Instagram profile lookup failed (${profileResponse.status})`);
         const now = new Date().toISOString();
@@ -1307,12 +1535,13 @@ export default {
         const tokenExpiresAt = new Date(Date.now() + Number(longToken.expires_in || 5_184_000) * 1000).toISOString();
         const tokenCiphertext = await encryptInstagramToken(env, stateRow.workspaceId, accessToken);
         const scopes = ['instagram_business_basic', 'instagram_business_manage_messages', 'instagram_business_manage_comments'];
-        await env.DB.prepare('INSERT INTO instagram_connections (id, workspace_id, meta_ig_user_id, username, display_name, profile_pic_url, account_type, access_token_ciphertext, token_expires_at, granted_scopes, status, webhook_status, last_token_check_at, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, \'connected\', \'active\', ?11, ?12, ?12) ON CONFLICT(id) DO UPDATE SET meta_ig_user_id = excluded.meta_ig_user_id, username = excluded.username, display_name = excluded.display_name, account_type = excluded.account_type, access_token_ciphertext = excluded.access_token_ciphertext, token_expires_at = excluded.token_expires_at, granted_scopes = excluded.granted_scopes, status = \'connected\', webhook_status = \'active\', last_token_check_at = excluded.last_token_check_at, updated_at = excluded.updated_at').bind(accountId, stateRow.workspaceId, String(profile.user_id || profile.id), String(profile.username), String(profile.username), null, String(profile.account_type || 'BUSINESS'), tokenCiphertext, tokenExpiresAt, JSON.stringify(scopes), now, now).run();
+        await env.DB.prepare('INSERT INTO instagram_connections (id, workspace_id, meta_ig_user_id, username, display_name, profile_pic_url, account_type, access_token_ciphertext, token_expires_at, granted_scopes, status, webhook_status, last_token_check_at, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, \'connected\', \'active\', ?11, ?12, ?12) ON CONFLICT(id) DO UPDATE SET meta_ig_user_id = excluded.meta_ig_user_id, username = excluded.username, display_name = excluded.display_name, profile_pic_url = excluded.profile_pic_url, account_type = excluded.account_type, access_token_ciphertext = excluded.access_token_ciphertext, token_expires_at = excluded.token_expires_at, granted_scopes = excluded.granted_scopes, status = \'connected\', webhook_status = \'active\', last_token_check_at = excluded.last_token_check_at, updated_at = excluded.updated_at').bind(accountId, stateRow.workspaceId, String(profile.user_id || profile.id), String(profile.username), String(profile.name || profile.username), profile.profile_picture_url ? String(profile.profile_picture_url) : null, String(profile.account_type || 'BUSINESS'), tokenCiphertext, tokenExpiresAt, JSON.stringify(scopes), now, now).run();
         instagramAccount.id = accountId;
         instagramAccount.workspaceId = stateRow.workspaceId;
         instagramAccount.metaIgUserId = String(profile.user_id || profile.id);
         instagramAccount.username = String(profile.username);
-        instagramAccount.displayName = String(profile.username);
+        instagramAccount.displayName = String(profile.name || profile.username);
+        instagramAccount.profilePicUrl = profile.profile_picture_url ? String(profile.profile_picture_url) : undefined;
         instagramAccount.accountType = profile.account_type || 'BUSINESS';
         instagramAccount.grantedScopes = scopes;
         instagramAccount.status = 'connected';
@@ -1445,13 +1674,32 @@ export default {
     }
 
     if (pathname === '/api/v1/workspace' && method === 'GET') {
+      if (instagramAccount.status === 'connected' && (!instagramAccount.profilePicUrl || instagramAccount.profilePicUrl.includes('unsplash.com'))) {
+        try {
+          const accessToken = await getInstagramAccessToken(env);
+          if (accessToken && instagramAccount.metaIgUserId) {
+            const profile = await getInstagramUserProfile({
+              accessToken,
+              graphHost: instagramAccount.graphHost,
+              graphVersion: instagramAccount.graphVersion,
+              userId: instagramAccount.metaIgUserId,
+            });
+            instagramAccount.username = profile.username || instagramAccount.username;
+            instagramAccount.displayName = profile.name || profile.username || instagramAccount.displayName;
+            instagramAccount.profilePicUrl = profile.profile_picture_url || undefined;
+            await persistWorkerState(env);
+          }
+        } catch (error) {
+          console.log(JSON.stringify({ event: 'instagram_profile_refresh_failed', error: error instanceof Error ? error.message : String(error) }));
+        }
+      }
       return jsonResponse({ workspace, members, instagramAccount });
     }
 
     if (pathname === '/api/v1/instagram/verify' && method === 'POST') {
       const accessToken = await getInstagramAccessToken(env);
       if (!accessToken) return jsonResponse({ error: 'INSTAGRAM_ACCESS_TOKEN is not configured' }, 503);
-      const verifyUrl = `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/me?fields=id,username,account_type,user_id&access_token=${encodeURIComponent(accessToken)}`;
+      const verifyUrl = `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/me?fields=id,username,name,profile_picture_url,account_type,user_id&access_token=${encodeURIComponent(accessToken)}`;
       const response = await fetch(verifyUrl);
       const profile: any = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -1471,7 +1719,8 @@ export default {
       }
       instagramAccount.metaIgUserId = profile.user_id || profile.id;
       instagramAccount.username = profile.username;
-      instagramAccount.displayName = profile.username;
+      instagramAccount.displayName = profile.name || profile.username;
+      instagramAccount.profilePicUrl = profile.profile_picture_url || instagramAccount.profilePicUrl;
       instagramAccount.accountType = profile.account_type || instagramAccount.accountType;
       instagramAccount.status = 'connected';
       instagramAccount.webhookStatus = 'active';
@@ -1640,7 +1889,9 @@ export default {
     }
 
     if (pathname === '/api/v1/conversations' && method === 'GET') {
-      return jsonResponse({ conversations });
+      const sync = await refreshLiveConversations(env);
+      conversations.sort((left, right) => Date.parse(right.lastMessageAt) - Date.parse(left.lastMessageAt));
+      return jsonResponse({ conversations, source: sync.source, synced: sync.synced, notice: sync.notice, fetchedAt: new Date().toISOString() });
     }
 
     if (pathname.startsWith('/api/v1/conversations/') && pathname.endsWith('/messages') && method === 'GET') {

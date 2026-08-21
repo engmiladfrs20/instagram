@@ -22,8 +22,24 @@ export function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
+// Some older persisted scenarios were saved after a UTF-8/legacy-encoding
+// conversion. Keep matching resilient so a real Persian message can still
+// trigger those scenarios while the Worker repairs the known records.
+const MOJIBAKE_REPLACEMENTS: Array<[string, string]> = [
+  ['ط³ظ„ط§ظ…', 'سلام'],
+  ['ط±ط§ظ‡ظ†ظ…ط§', 'راهنما'],
+  ['ط¢ط¯ط±ط³', 'آدرس'],
+  ['ظ¾ط³طھ', 'پست'],
+  ['ط³ظپط§ط±ط´', 'سفارش'],
+  ['ط®ط±غŒط¯', 'خرید'],
+  ['ظ„غŒظ†ع©', 'لینک'],
+  ['ظ‚غŒظ…طھ', 'قیمت'],
+];
+
 export function normalizeText(value: string | undefined): string {
-  return (value || '').normalize('NFKC').trim().toLocaleLowerCase('fa-IR');
+  let text = value || '';
+  for (const [broken, repaired] of MOJIBAKE_REPLACEMENTS) text = text.split(broken).join(repaired);
+  return text.normalize('NFKC').trim().toLocaleLowerCase('fa-IR');
 }
 
 function triggerMatches(triggerType: TriggerType, trigger: IncomingTrigger): boolean {
@@ -54,8 +70,16 @@ function keywordMatches(text: string, keyword: string, mode: FlowNode['config'][
 }
 
 export function matchesAutomation(auto: Automation, context: IncomingContext): boolean {
-  if (auto.status !== 'active' || !triggerMatches(auto.triggerType, context.trigger)) return false;
-  const triggerNode = (auto.publishedVersion || auto.currentVersion).nodes.find((node) => node.type === 'TRIGGER');
+  if (auto.status !== 'active') return false;
+  return [auto.publishedVersion, auto.currentVersion]
+    .filter((version, index, versions) => Boolean(version) && versions.indexOf(version) === index)
+    .some((version) => versionMatchesAutomation(auto, version!, context));
+}
+
+function versionMatchesAutomation(auto: Automation, version: AutomationVersion, context: IncomingContext): boolean {
+  const triggerNode = version.nodes.find((node) => node.type === 'TRIGGER');
+  const triggerType = triggerNode?.config.triggerType || auto.triggerType;
+  if (!triggerMatches(triggerType, context.trigger)) return false;
   if (context.trigger === 'COMMENT_CREATED' && triggerNode) {
     const { postScope, postIds, requireFollow } = triggerNode.config;
     if (postScope === 'selected' && postIds?.length && (!context.mediaId || !postIds.includes(context.mediaId))) return false;
@@ -66,7 +90,8 @@ export function matchesAutomation(auto: Automation, context: IncomingContext): b
   const keywords = triggerNode?.config.keywords?.length ? triggerNode.config.keywords : auto.keywords;
   if (!keywords?.length) return false;
   const mode = triggerNode?.config.matchMode || 'contains';
-  return keywords.some((keyword) => keywordMatches(context.text, keyword, mode));
+  const textToMatch = context.replyPayload || context.text;
+  return keywords.some((keyword) => keywordMatches(textToMatch, keyword, mode));
 }
 
 function conditionPasses(node: FlowNode, context: IncomingContext): boolean {
@@ -119,6 +144,8 @@ export function executableNodes(version: AutomationVersion, context: IncomingCon
   return result;
 }
 
-export function runtimeVersion(auto: Automation): AutomationVersion {
+export function runtimeVersion(auto: Automation, context?: IncomingContext): AutomationVersion {
+  if (context && auto.publishedVersion && versionMatchesAutomation(auto, auto.publishedVersion, context)) return auto.publishedVersion;
+  if (context && versionMatchesAutomation(auto, auto.currentVersion, context)) return auto.currentVersion;
   return auto.publishedVersion || auto.currentVersion;
 }

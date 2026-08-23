@@ -203,7 +203,107 @@ export const INITIAL_FORM_SUBMISSIONS: FormSubmission[] = [
   },
 ];
 
+export const SAMPLE_AUTOMATION_ID = 'auto_sample_comment_follow_gate';
+
 export const INITIAL_AUTOMATIONS: Automation[] = [
+  {
+    id: SAMPLE_AUTOMATION_ID,
+    workspaceId: 'ws_shikposhan',
+    instagramAccountId: 'iga_shikposhan_main',
+    name: 'نمونه: کامنت ← فالو ← دایرکت',
+    description: 'نمونهٔ آماده برای پاسخ به کامنت، درخواست فالو و ارسال محتوای تصادفی بعد از تأیید فالو',
+    status: 'active',
+    priority: 5,
+    triggerType: 'COMMENT_KEYWORD',
+    keywords: ['قیمت', 'لینک', 'راهنما'],
+    runCount: 0,
+    createdBy: 'usr_owner_1',
+    createdAt: '2026-08-23T08:00:00Z',
+    updatedAt: '2026-08-23T08:00:00Z',
+    currentVersion: {
+      id: 'ver_sample_comment_follow_gate_v1',
+      automationId: SAMPLE_AUTOMATION_ID,
+      versionNo: 1,
+      checksum: 'sample-comment-follow-gate-v1',
+      createdAt: '2026-08-23T08:00:00Z',
+      publishedAt: '2026-08-23T08:00:00Z',
+      validationResult: { valid: true, errors: [], warnings: ['این سناریو نمونه است؛ قبل از انتشار، متن‌ها و پست‌های هدف را بررسی کنید.'] },
+      nodes: [
+        {
+          id: 'sample_trigger_comment',
+          type: 'TRIGGER',
+          title: 'کامنت با عبارت قیمت، لینک یا راهنما',
+          position: { x: 70, y: 360 },
+          config: {
+            triggerType: 'COMMENT_KEYWORD',
+            keywords: ['قیمت', 'لینک', 'راهنما'],
+            matchMode: 'contains',
+            postScope: 'all',
+          },
+        },
+        {
+          id: 'sample_public_reply',
+          type: 'REPLY_PUBLIC_COMMENT',
+          title: 'پاسخ عمومی زیر همان کامنت',
+          position: { x: 360, y: 160 },
+          config: {
+            publicReplyText: 'سلام! راهنمای کامل برای شما در دایرکت ارسال شد. 🌱',
+            publicResponseVariants: ['سلام! راهنمای کامل برای شما در دایرکت ارسال شد. 🌱', 'ممنون از کامنت شما؛ پیام راهنما را در دایرکت ببینید. 📩'],
+            commentReplyDestination: 'both',
+          },
+        },
+        {
+          id: 'sample_follow_gate',
+          type: 'SEND_PRIVATE_REPLY',
+          title: 'درخواست فالو و دکمهٔ فالو دارم',
+          position: { x: 360, y: 390 },
+          config: {
+            followGateMode: 'claim',
+            followGatePayload: 'FOLLOW_CLAIMED:sample',
+            text: 'اول پیج ما را فالو کنید و بعد روی دکمهٔ «فالو دارم» بزنید تا راهنما برای شما ارسال شود.',
+            buttons: [{ title: 'فالو دارم', payload: 'FOLLOW_CLAIMED:sample' }],
+            commentReplyDestination: 'both',
+          },
+        },
+        {
+          id: 'sample_follow_success',
+          type: 'SEND_PRIVATE_REPLY',
+          title: 'تأیید فالو و ادامهٔ سناریو',
+          position: { x: 680, y: 390 },
+          config: {
+            followGateMode: 'verified',
+            text: 'ممنون که پیج را فالو کردید! حالا محتوای درخواستی برای شما ارسال می‌شود.',
+            commentReplyDestination: 'dm',
+          },
+        },
+        {
+          id: 'sample_follow_content',
+          type: 'SEND_PRIVATE_REPLY',
+          title: 'ارسال یکی از پاسخ‌های تصادفی',
+          position: { x: 980, y: 390 },
+          config: {
+            text: 'این پاسخ نمونهٔ اول است؛ محتوای واقعی خودتان را جایگزین کنید.',
+            responseVariants: ['این پاسخ نمونهٔ اول است؛ محتوای واقعی خودتان را جایگزین کنید. ✅', 'راهنمای شما آماده شد؛ اگر سؤال دیگری دارید، همین‌جا بنویسید. 💬', 'لینک و توضیحات کامل برایتان ارسال شد. امیدواریم مفید باشد. 🌟'],
+            commentReplyDestination: 'dm',
+          },
+        },
+        {
+          id: 'sample_add_tag',
+          type: 'ADD_TAG',
+          title: 'برچسب‌گذاری مخاطب علاقه‌مند',
+          position: { x: 1280, y: 390 },
+          config: { tagToAdd: 'نمونه_فالو_تأییدشده' },
+        },
+      ],
+      edges: [
+        { id: 'sample_edge_public', sourceNodeId: 'sample_trigger_comment', targetNodeId: 'sample_public_reply', label: 'پاسخ عمومی' },
+        { id: 'sample_edge_gate', sourceNodeId: 'sample_trigger_comment', targetNodeId: 'sample_follow_gate', label: 'ارسال درخواست فالو' },
+        { id: 'sample_edge_success', sourceNodeId: 'sample_follow_gate', targetNodeId: 'sample_follow_success', label: 'پس از تأیید فالو', conditionValue: 'FOLLOW_CLAIMED:sample' },
+        { id: 'sample_edge_content', sourceNodeId: 'sample_follow_success', targetNodeId: 'sample_follow_content', label: 'ارسال پاسخ تصادفی' },
+        { id: 'sample_edge_tag', sourceNodeId: 'sample_follow_content', targetNodeId: 'sample_add_tag', label: 'ثبت برچسب' },
+      ],
+    },
+  },
   {
     id: 'auto_comment_price',
     workspaceId: 'ws_shikposhan',

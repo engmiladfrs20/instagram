@@ -2,6 +2,7 @@ import {
   INITIAL_WORKSPACE,
   INITIAL_MEMBERS,
   INITIAL_INSTAGRAM_ACCOUNT,
+  SAMPLE_AUTOMATION_ID,
   INITIAL_AUTOMATIONS,
   INITIAL_CONTACTS,
   INITIAL_CONVERSATIONS,
@@ -178,10 +179,13 @@ type WorkerStateSnapshot = {
   dlqItems: DLQItem[];
   auditLogs: AuditLog[];
   analytics: typeof INITIAL_ANALYTICS;
+  seedVersion?: number;
 };
 
 let stateLoaded = false;
 let stateWorkspaceId = INITIAL_WORKSPACE.id;
+let stateSeedVersion = 0;
+const DEFAULT_AUTOMATION_SEED_VERSION = 1;
 
 async function readSnapshotFromStorage(env: Env, workspaceId: string): Promise<WorkerStateSnapshot | null> {
   if (env.DB) {
@@ -213,6 +217,7 @@ async function loadWorkerState(env: Env, workspaceId = INITIAL_WORKSPACE.id) {
   if (stateLoaded && stateWorkspaceId === workspaceId) return;
   const saved = await readSnapshotFromStorage(env, workspaceId);
   if (saved) {
+    stateSeedVersion = saved.seedVersion || 0;
     workspace = saved.workspace || workspace;
     members = saved.members || members;
     instagramAccount = saved.instagramAccount || instagramAccount;
@@ -227,16 +232,25 @@ async function loadWorkerState(env: Env, workspaceId = INITIAL_WORKSPACE.id) {
     dlqItems = saved.dlqItems || dlqItems;
     auditLogs = saved.auditLogs || auditLogs;
     analytics = saved.analytics || analytics;
-    const repaired = repairAutomationTextEncoding();
+    let stateChanged = repairAutomationTextEncoding();
+    if (stateSeedVersion < DEFAULT_AUTOMATION_SEED_VERSION) {
+      stateSeedVersion = DEFAULT_AUTOMATION_SEED_VERSION;
+      if (!automations.some((automation) => automation.id === SAMPLE_AUTOMATION_ID)) {
+        const sample = INITIAL_AUTOMATIONS.find((automation) => automation.id === SAMPLE_AUTOMATION_ID);
+        if (sample) automations.unshift(structuredClone(sample));
+      }
+      normalizeStateReferences();
+      stateChanged = true;
+    }
     normalizeStateReferences();
     processedFingerprints.clear();
     webhookEvents.forEach((event) => processedFingerprints.add(event.fingerprint));
-    if (repaired) await persistWorkerState(env);
+    if (stateChanged) await persistWorkerState(env);
   } else if (workspaceId !== INITIAL_WORKSPACE.id) {
     workspace = { ...INITIAL_WORKSPACE, id: workspaceId, name: 'New workspace', slug: `workspace-${workspaceId.slice(-8)}`, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
     members = [];
     instagramAccount = { ...INITIAL_INSTAGRAM_ACCOUNT, id: `iga_${crypto.randomUUID()}`, workspaceId, metaIgUserId: '', username: '', displayName: '', status: 'disconnected', webhookStatus: 'pending', createdAt: new Date().toISOString() };
-    automations = [];
+    automations = INITIAL_AUTOMATIONS.filter((automation) => automation.id === SAMPLE_AUTOMATION_ID).map((automation) => structuredClone(automation));
     contacts = [];
     conversations = [];
     messages = [];
@@ -247,9 +261,11 @@ async function loadWorkerState(env: Env, workspaceId = INITIAL_WORKSPACE.id) {
     dlqItems = [];
     auditLogs = [];
     analytics = structuredClone(INITIAL_ANALYTICS);
+    stateSeedVersion = DEFAULT_AUTOMATION_SEED_VERSION;
     normalizeStateReferences();
     await persistWorkerState(env);
   }
+  if (!saved && workspaceId === INITIAL_WORKSPACE.id) stateSeedVersion = DEFAULT_AUTOMATION_SEED_VERSION;
   stateLoaded = true;
   stateWorkspaceId = workspace.id;
 }
@@ -270,6 +286,7 @@ async function persistWorkerState(env: Env) {
     dlqItems,
     auditLogs,
     analytics,
+    seedVersion: stateSeedVersion,
   };
   const payload = JSON.stringify(snapshot);
   if (env.DB) {

@@ -8,6 +8,7 @@ import {
   INITIAL_WORKSPACE,
   INITIAL_MEMBERS,
   INITIAL_INSTAGRAM_ACCOUNT,
+  SAMPLE_AUTOMATION_ID,
   INITIAL_AUTOMATIONS,
   INITIAL_CONTACTS,
   INITIAL_CONVERSATIONS,
@@ -69,6 +70,7 @@ type PersistedState = {
   dlqItems: DLQItem[];
   auditLogs: AuditLog[];
   analytics: typeof INITIAL_ANALYTICS;
+  seedVersion?: number;
 };
 
 const stateFile = path.join(process.cwd(), '.data', 'state.json');
@@ -83,6 +85,8 @@ function readPersistedState(): Partial<PersistedState> {
 }
 
 const persistedState = readPersistedState();
+const DEFAULT_AUTOMATION_SEED_VERSION = 1;
+let seedVersion = persistedState.seedVersion || 0;
 let workspace = persistedState.workspace || clone(INITIAL_WORKSPACE);
 let members = persistedState.members || clone(INITIAL_MEMBERS);
 let instagramAccount = persistedState.instagramAccount || clone(INITIAL_INSTAGRAM_ACCOUNT);
@@ -150,6 +154,19 @@ function normalizeStateReferences() {
 
 normalizeStateReferences();
 
+function seedDefaultAutomation(): boolean {
+  if (seedVersion >= DEFAULT_AUTOMATION_SEED_VERSION) return false;
+  seedVersion = DEFAULT_AUTOMATION_SEED_VERSION;
+  if (!automations.some((automation) => automation.id === SAMPLE_AUTOMATION_ID)) {
+    const sample = INITIAL_AUTOMATIONS.find((automation) => automation.id === SAMPLE_AUTOMATION_ID);
+    if (sample) automations.unshift(clone(sample));
+  }
+  normalizeStateReferences();
+  return true;
+}
+
+if (seedDefaultAutomation()) persistState();
+
 function persistState() {
   if (process.env.DISABLE_PERSISTENCE === 'true') return;
   try {
@@ -169,6 +186,7 @@ function persistState() {
       dlqItems,
       auditLogs,
       analytics,
+      seedVersion,
     };
     fs.writeFileSync(stateFile, JSON.stringify(state), 'utf8');
   } catch (error) {

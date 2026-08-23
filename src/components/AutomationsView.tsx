@@ -138,7 +138,7 @@ const defaultDraft = (kind: StudioKind): StudioDraft => ({
   followGateEnabled: false,
   followGatePayload: 'FOLLOW_CLAIMED',
   followGateMessage: 'برای دریافت این محتوا ابتدا پیج را فالو کنید و سپس روی دکمهٔ زیر بزنید.',
-  followGateButtonTitle: 'فالو کردم',
+  followGateButtonTitle: 'فالو دارم',
   followGateSuccessMessage: 'ممنون که پیج را فالو کردید! حالا ادامهٔ راهنما برای شما ارسال می‌شود.',
   linkMessage: false,
   storyReplyOnly: false,
@@ -169,10 +169,24 @@ const draftFromAutomation = (automation: Automation): StudioDraft => {
   const draft = defaultDraft(kind);
   const nodes = automation.currentVersion?.nodes || [];
   const trigger = nodes.find((node) => node.type === 'TRIGGER');
-  const followContentNode = nodes.find((node) => node.id === 'node_follow_content');
+  const followSuccessNode = nodes.find((node) => (
+    node.id === 'node_follow_success' || node.config.followGateMode === 'verified'
+  ));
+  const followSuccessIndex = followSuccessNode ? nodes.indexOf(followSuccessNode) : -1;
+  const followContentNode = nodes.find((node, index) => (
+    node.id === 'node_follow_content'
+    || (
+      followSuccessIndex >= 0
+      && index > followSuccessIndex
+      && (node.type === 'SEND_PRIVATE_REPLY' || node.type === 'SEND_TEXT' || node.type === 'SEND_QUICK_REPLIES')
+      && node.config.followGateMode !== 'claim'
+      && node.id !== followSuccessNode?.id
+    )
+  ));
   const privateNode = followContentNode || nodes.find((node) => (
     (node.type === 'SEND_PRIVATE_REPLY' || node.type === 'SEND_TEXT' || node.type === 'SEND_QUICK_REPLIES')
     && node.config.followGateMode !== 'claim'
+    && node.id !== followSuccessNode?.id
   ));
   const publicNode = nodes.find((node) => node.type === 'REPLY_PUBLIC_COMMENT');
   const questionNodes = nodes.filter((node) => node.type === 'ASK_FORM_FIELD');
@@ -183,7 +197,6 @@ const draftFromAutomation = (automation: Automation): StudioDraft => {
     : draft.responseMedia;
   const responseButtons = privateNode?.config.buttons || draft.responseButtons;
   const followGateNode = nodes.find((node) => node.config.followGateMode === 'claim');
-  const followSuccessNode = nodes.find((node) => node.id === 'node_follow_success');
   const responseNode = privateNode || followSuccessNode;
   const effectiveResponseMedia = responseNode?.config.mediaUrl && responseNode.config.mediaType
     ? [{ type: responseNode.config.mediaType, url: responseNode.config.mediaUrl }]
@@ -745,7 +758,7 @@ interface ToggleFieldProps { label: string; checked: boolean; onChange: (value: 
 const ToggleField: React.FC<ToggleFieldProps> = ({ label, checked, onChange }) => <label className={`direct-toggle ${checked ? 'is-on' : ''}`}><span><span className="direct-toggle-title">{label}</span><small>{checked ? 'روشن' : 'خاموش'}</small></span><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><i aria-hidden="true" /></label>;
 
 interface ChipEditorProps { values: string[]; onAdd: (value: string) => void; onRemove: (index: number) => void; }
-const ChipEditor: React.FC<ChipEditorProps> = ({ values, onAdd, onRemove }) => { const [input, setInput] = useState(''); const commit = () => { onAdd(input); setInput(''); }; return <div className="direct-chip-editor">{values.map((value, index) => <span className="direct-chip" key={`${value}-${index}`}>{value}<button type="button" onClick={() => onRemove(index)} aria-label={`حذف ${value}`}><X size={12} /></button></span>)}<input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ',') { event.preventDefault(); commit(); } }} onBlur={commit} placeholder="مثلاً قیمت" /></div>; };
+const ChipEditor: React.FC<ChipEditorProps> = ({ values, onAdd, onRemove }) => { const [input, setInput] = useState(''); const commit = () => { if (!input.trim()) return; onAdd(input); setInput(''); }; return <div className="direct-chip-editor">{values.map((value, index) => <span className="direct-chip" key={`${value}-${index}`}>{value}<button type="button" onClick={() => onRemove(index)} aria-label={`حذف ${value}`}><X size={12} /></button></span>)}<input value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ',') { event.preventDefault(); commit(); } }} onBlur={commit} placeholder="مثلاً قیمت" /></div>; };
 
 interface VariantEditorProps { label: string; values: string[]; onAdd: () => void; onChange: (index: number, value: string) => void; onRemove: (index: number) => void; }
 const VariantEditor: React.FC<VariantEditorProps> = ({ label, values, onAdd, onChange, onRemove }) => <div className="direct-variant-editor"><div className="direct-field-label-row"><label className="direct-label">{label}</label><button type="button" className="direct-inline-btn" onClick={onAdd}><Plus size={14} /> پاسخ جدید</button></div>{values.map((value, index) => <div className="direct-variant-row" key={`variant-${index}`}><span>{index + 1}</span><textarea className="form-control direct-control" rows={2} value={value} onChange={(event) => onChange(index, event.target.value)} /><button type="button" onClick={() => onRemove(index)} aria-label="حذف پاسخ"><Trash2 size={15} /></button></div>)}</div>;

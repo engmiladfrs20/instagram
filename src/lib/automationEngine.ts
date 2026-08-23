@@ -82,13 +82,14 @@ export function matchesAutomation(auto: Automation, context: IncomingContext): b
 function versionMatchesAutomation(auto: Automation, version: AutomationVersion, context: IncomingContext): boolean {
   const triggerNode = version.nodes.find((node) => node.type === 'TRIGGER');
   const triggerType = triggerNode?.config.triggerType || auto.triggerType;
-  if (!triggerMatches(triggerType, context.trigger)) return false;
+  const followGateNode = version.nodes.find((node) => node.config.followGateMode === 'claim');
   const followGateClaim = Boolean(
     context.replyPayload
-      && triggerNode?.config.followGateMode === 'claim'
-      && triggerNode.config.followGatePayload === context.replyPayload,
+      && (triggerNode?.config.followGateMode === 'claim' || followGateNode)
+      && (triggerNode?.config.followGatePayload || followGateNode?.config.followGatePayload) === context.replyPayload,
   );
   if (followGateClaim) return true;
+  if (!triggerMatches(triggerType, context.trigger)) return false;
   if (context.trigger === 'COMMENT_CREATED' && triggerNode) {
     const { postScope, postIds, requireFollow } = triggerNode.config;
     if (postScope === 'selected' && postIds?.length && (!context.mediaId || !postIds.includes(context.mediaId))) return false;
@@ -105,7 +106,7 @@ function versionMatchesAutomation(auto: Automation, version: AutomationVersion, 
 
 function conditionPasses(node: FlowNode, context: IncomingContext): boolean {
   const value = node.config.conditionValue;
-  const field = normalizeText(node.config.conditionField === 'payload' ? JSON.stringify(context.payload) : context.text);
+  const field = normalizeText(node.config.conditionField === 'payload' ? (context.replyPayload || JSON.stringify(context.payload)) : context.text);
   switch (node.config.conditionOperator) {
     case 'equals':
       return field === normalizeText(String(value || ''));
@@ -135,7 +136,17 @@ export function executableNodes(version: AutomationVersion, context: IncomingCon
   if (!trigger) return [];
 
   const result: FlowNode[] = [];
-  const queue = [trigger.id];
+  const followGatePayload = context.replyPayload;
+  const matchedFollowGate = followGatePayload
+    ? version.nodes.find((node) => node.config.followGateMode === 'claim' && node.config.followGatePayload === followGatePayload)
+    : undefined;
+  const followSuccessNodes = matchedFollowGate
+    ? version.nodes.filter((node) => node.config.followGateMode === 'verified')
+    : [];
+  // A follow confirmation is a second pass through the graph. Start at the
+  // verified branch so the original public comment and claim button are not
+  // sent a second time.
+  const queue = followSuccessNodes.length ? followSuccessNodes.map((node) => node.id) : [trigger.id];
   const visited = new Set<string>();
   while (queue.length) {
     const id = queue.shift()!;
@@ -148,10 +159,10 @@ export function executableNodes(version: AutomationVersion, context: IncomingCon
       if (!(isFollowGateNode && context.replyPayload)) result.push(node);
     }
     if (node.type === 'CONDITION' && !conditionPasses(node, context)) continue;
-    for (const edge of outgoing.get(id) || []) {
-      if (edge.conditionValue && edge.conditionValue !== context.replyPayload) continue;
-      queue.push(edge.targetNodeId);
-    }
+    const edgeValue = context.replyPayload || context.text;
+    const matchingEdges = (outgoing.get(id) || []).filter((edge) => !edge.conditionValue || keywordMatches(edgeValue, edge.conditionValue, 'contains'));
+    const edges = node.config.branchMode === 'first_match' ? matchingEdges.slice(0, 1) : matchingEdges;
+    for (const edge of edges) queue.push(edge.targetNodeId);
   }
   return result;
 }

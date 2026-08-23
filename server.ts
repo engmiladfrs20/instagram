@@ -37,6 +37,7 @@ import {
   executableNodes,
   IncomingContext,
   matchesAutomation,
+  normalizeText,
   runtimeVersion,
 } from './src/lib/automationEngine';
 import { listInstagramMedia, replyToInstagramComment, sendInstagramMessage, sendInstagramText, verifyInstagramAccount } from './src/lib/metaClient';
@@ -591,6 +592,14 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
   }
 
   if (conversation.mode === 'human') return { blocked: false };
+
+  const isFollowConfirmation = !isComment && (
+    String(replyPayload || '').toUpperCase() === 'FOLLOW_CLAIMED'
+    || String(replyPayload || '').toUpperCase().startsWith('FOLLOW_CLAIMED:')
+    || ['فالو کردم', 'فالو دارم', 'followed', 'i follow'].includes(normalizeText(text))
+  );
+  if (isFollowConfirmation && fromUser.is_follower === false) return { blocked: false };
+  if (isFollowConfirmation && typeof fromUser.is_follower !== 'boolean' && automations.some((item) => item.status === 'active' && [item.currentVersion, item.publishedVersion].filter(Boolean).some((version) => version!.nodes.some((node) => node.config.followGateMode === 'claim')))) return { blocked: false };
 
   const context: IncomingContext = {
     trigger: isComment ? 'COMMENT_CREATED' : replyPayload ? 'QUICK_REPLY_SELECTED' : 'DM_RECEIVED',
@@ -1289,11 +1298,13 @@ app.post('/api/v1/webhooks/simulate', async (req, res) => {
   const eventType = req.body.eventType || 'comments';
   const text = typeof req.body.text === 'string' ? req.body.text : 'قیمت محصول را می‌خواهم';
   const username = typeof req.body.username === 'string' ? req.body.username : 'sample_user';
+  const replyPayload = typeof req.body.replyPayload === 'string' ? req.body.replyPayload : undefined;
+  const isFollower = typeof req.body.isFollower === 'boolean' ? req.body.isFollower : undefined;
   const isExpiredComment = Boolean(req.body.isExpiredComment) && eventType === 'comments';
   const createdTimeSec = isExpiredComment
     ? Math.floor(Date.now() / 1000) - 8 * 24 * 3600
     : Math.floor(Date.now() / 1000) - 60;
-  const sender = { id: `igs_sim_${username}`, username };
+  const sender = { id: `igs_sim_${username}`, username, ...(typeof isFollower === 'boolean' ? { is_follower: isFollower } : {}) };
   const value: any = eventType === 'comments'
     ? {
         id: `cmt_sim_${crypto.randomUUID()}`,
@@ -1307,7 +1318,7 @@ app.post('/api/v1/webhooks/simulate', async (req, res) => {
           mid: `mid_sim_${crypto.randomUUID()}`,
           text,
           from: sender,
-          ...(eventType === 'quick_reply' ? { quick_reply: { payload: text } } : {}),
+          ...(eventType === 'quick_reply' || replyPayload ? { quick_reply: { payload: replyPayload || text } } : {}),
         },
       };
   const payload = {

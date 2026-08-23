@@ -190,6 +190,8 @@ export interface FlowNode {
     delayMinutes?: number;
     followGateMode?: 'claim' | 'verified';
     followGatePayload?: string;
+    /** How outgoing edges from this node should be evaluated. */
+    branchMode?: 'all' | 'first_match';
   };
   position: { x: number; y: number };
 }

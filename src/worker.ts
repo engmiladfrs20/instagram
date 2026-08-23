@@ -1101,29 +1101,34 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
 
   const isFollowConfirmation = !isComment && (
     String(replyPayload || '').toUpperCase() === 'FOLLOW_CLAIMED'
+    || String(replyPayload || '').toUpperCase().startsWith('FOLLOW_CLAIMED:')
     || ['فالو کردم', 'فالو دارم', 'followed', 'i follow'].includes(normalizeText(text))
   );
   let followStatus: 'verified' | 'not_verified' | 'unavailable' = 'unavailable';
   if (isFollowConfirmation) {
-    try {
-      const accessToken = await getInstagramAccessToken(env);
-      if (accessToken) {
-        const profile = await getInstagramUserProfile({
-          accessToken,
-          graphHost: instagramAccount.graphHost,
-          graphVersion: instagramAccount.graphVersion,
-          userId: String(fromUser.id),
-          includeFollowStatus: true,
-        });
-        const followValue = typeof profile.is_user_follow_business === 'boolean'
-          ? profile.is_user_follow_business
-          : typeof profile.is_business_follow_user === 'boolean'
-            ? profile.is_business_follow_user
-            : undefined;
-        followStatus = followValue === true ? 'verified' : followValue === false ? 'not_verified' : 'unavailable';
+    if (typeof fromUser.is_follower === 'boolean') {
+      followStatus = fromUser.is_follower ? 'verified' : 'not_verified';
+    } else {
+      try {
+        const accessToken = await getInstagramAccessToken(env);
+        if (accessToken) {
+          const profile = await getInstagramUserProfile({
+            accessToken,
+            graphHost: instagramAccount.graphHost,
+            graphVersion: instagramAccount.graphVersion,
+            userId: String(fromUser.id),
+            includeFollowStatus: true,
+          });
+          const followValue = typeof profile.is_user_follow_business === 'boolean'
+            ? profile.is_user_follow_business
+            : typeof profile.is_business_follow_user === 'boolean'
+              ? profile.is_business_follow_user
+              : undefined;
+          followStatus = followValue === true ? 'verified' : followValue === false ? 'not_verified' : 'unavailable';
+        }
+      } catch (error) {
+        console.log(JSON.stringify({ event: 'instagram_follow_status_unavailable', userId: String(fromUser.id), error: error instanceof Error ? error.message : String(error) }));
       }
-    } catch (error) {
-      console.log(JSON.stringify({ event: 'instagram_follow_status_unavailable', userId: String(fromUser.id), error: error instanceof Error ? error.message : String(error) }));
     }
     contact.customFields.follow_status = followStatus;
     if (!contact.tags.includes('follow_confirmation_received')) contact.tags.push('follow_confirmation_received');
@@ -1143,6 +1148,15 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
   if (isFollowConfirmation && followStatus === 'not_verified') {
     await deliverAiReply(env, 'برای دریافت این محتوا ابتدا پیج را فالو کن و سپس روی «فالو کردم» بزن.', String(fromUser.id), conversation, eventId);
     return { blocked: false };
+  }
+  if (isFollowConfirmation && followStatus === 'unavailable') {
+    const hasFollowGateAutomation = automations.some((item) => item.status === 'active' && [item.currentVersion, item.publishedVersion]
+      .filter(Boolean)
+      .some((version) => version!.nodes.some((node) => node.config.followGateMode === 'claim')));
+    if (hasFollowGateAutomation) {
+      await deliverAiReply(env, 'فعلاً امکان بررسی وضعیت فالو وجود ندارد. چند لحظه بعد دوباره روی «فالو کردم» بزن.', String(fromUser.id), conversation, eventId);
+      return { blocked: false };
+    }
   }
   const automation = automations
     .filter((item) => matchesAutomation(item, context))
@@ -2085,7 +2099,7 @@ export default {
 
     if (pathname === '/api/v1/webhooks/simulate' && method === 'POST') {
       const body: any = await request.json().catch(() => ({}));
-      const { eventType, text, username, isExpiredComment, isDuplicate } = body;
+      const { eventType, text, username, isExpiredComment, isDuplicate, replyPayload, isFollower } = body;
 
       const simUsername = username || 'shirin_lifestyle';
       const simText = text || 'قیمت مانتو چنده؟';
@@ -2108,14 +2122,14 @@ export default {
                       text: simText,
                       created_time: createdTimeSec,
                       media: { id: '17891122334455', media_product_type: 'REELS' },
-                      from: { id: `igs_sim_${simUsername}`, username: simUsername },
+                      from: { id: `igs_sim_${simUsername}`, username: simUsername, ...(typeof isFollower === 'boolean' ? { is_follower: isFollower } : {}) },
                     }
                   : {
                       message: {
                         mid: `mid_sim_${Date.now()}`,
                         text: simText,
-                        from: { id: `igs_sim_${simUsername}`, username: simUsername },
-                        ...(eventType === 'quick_reply' ? { quick_reply: { payload: simText } } : {}),
+                        from: { id: `igs_sim_${simUsername}`, username: simUsername, ...(typeof isFollower === 'boolean' ? { is_follower: isFollower } : {}) },
+                        ...(eventType === 'quick_reply' || replyPayload ? { quick_reply: { payload: replyPayload || simText } } : {}),
                       },
                     },
               },

@@ -24,11 +24,13 @@ import {
 } from 'lucide-react';
 import { Automation, FlowEdge, FlowNode, FormField, InstagramMedia, TriggerType } from '../types';
 import { ResponsivePreview } from './ResponsivePreview';
+import { VisualScenarioBuilder } from './VisualScenarioBuilder';
 
 type StudioKind = 'dm' | 'comment' | 'form' | 'followup';
 type MatchMode = 'exact' | 'contains' | 'starts_with' | 'regex';
 type CommentDestination = 'dm' | 'comment' | 'both';
 type RepeatPolicy = 'keep_all' | 'limit' | 'replace';
+type EditorMode = 'simple' | 'visual';
 
 export type ResponseMediaDraft = {
   type: 'image' | 'video' | 'audio';
@@ -64,6 +66,7 @@ interface StudioDraft {
   destination: CommentDestination;
   requireFollow: boolean;
   followGateEnabled: boolean;
+  followGatePayload: string;
   followGateMessage: string;
   followGateButtonTitle: string;
   followGateSuccessMessage: string;
@@ -133,6 +136,7 @@ const defaultDraft = (kind: StudioKind): StudioDraft => ({
   destination: 'both',
   requireFollow: false,
   followGateEnabled: false,
+  followGatePayload: 'FOLLOW_CLAIMED',
   followGateMessage: 'برای دریافت این محتوا ابتدا پیج را فالو کنید و سپس روی دکمهٔ زیر بزنید.',
   followGateButtonTitle: 'فالو کردم',
   followGateSuccessMessage: 'ممنون که پیج را فالو کردید! حالا ادامهٔ راهنما برای شما ارسال می‌شود.',
@@ -165,7 +169,11 @@ const draftFromAutomation = (automation: Automation): StudioDraft => {
   const draft = defaultDraft(kind);
   const nodes = automation.currentVersion?.nodes || [];
   const trigger = nodes.find((node) => node.type === 'TRIGGER');
-  const privateNode = nodes.find((node) => node.type === 'SEND_PRIVATE_REPLY' || node.type === 'SEND_TEXT' || node.type === 'SEND_QUICK_REPLIES');
+  const followContentNode = nodes.find((node) => node.id === 'node_follow_content');
+  const privateNode = followContentNode || nodes.find((node) => (
+    (node.type === 'SEND_PRIVATE_REPLY' || node.type === 'SEND_TEXT' || node.type === 'SEND_QUICK_REPLIES')
+    && node.config.followGateMode !== 'claim'
+  ));
   const publicNode = nodes.find((node) => node.type === 'REPLY_PUBLIC_COMMENT');
   const questionNodes = nodes.filter((node) => node.type === 'ASK_FORM_FIELD');
   const destination = publicNode && privateNode ? 'both' : publicNode ? 'comment' : 'dm';
@@ -176,7 +184,7 @@ const draftFromAutomation = (automation: Automation): StudioDraft => {
   const responseButtons = privateNode?.config.buttons || draft.responseButtons;
   const followGateNode = nodes.find((node) => node.config.followGateMode === 'claim');
   const followSuccessNode = nodes.find((node) => node.id === 'node_follow_success');
-  const responseNode = followSuccessNode || privateNode;
+  const responseNode = privateNode || followSuccessNode;
   const effectiveResponseMedia = responseNode?.config.mediaUrl && responseNode.config.mediaType
     ? [{ type: responseNode.config.mediaType, url: responseNode.config.mediaUrl }]
     : responseMedia;
@@ -199,6 +207,7 @@ const draftFromAutomation = (automation: Automation): StudioDraft => {
     destination,
     requireFollow: Boolean(trigger?.config.requireFollow),
     followGateEnabled: trigger?.config.followGateMode === 'claim' || Boolean(followGateNode),
+    followGatePayload: trigger?.config.followGatePayload || followGateNode?.config.followGatePayload || draft.followGatePayload,
     followGateMessage: followGateNode?.config.text || draft.followGateMessage,
     followGateButtonTitle: followGateNode?.config.buttons?.[0]?.title || draft.followGateButtonTitle,
     followGateSuccessMessage: followSuccessNode?.config.text || draft.followGateSuccessMessage,
@@ -231,7 +240,7 @@ const makeNode = (id: string, type: FlowNode['type'], title: string, config: Flo
   position: { x: 80 + position * 250, y: 120 },
 });
 
-const buildNodes = (kind: StudioKind, draft: StudioDraft): { nodes: FlowNode[]; edges: FlowEdge[]; triggerType: TriggerType } => {
+const buildNodes = (kind: StudioKind, draft: StudioDraft, followGatePayload = draft.followGatePayload || 'FOLLOW_CLAIMED'): { nodes: FlowNode[]; edges: FlowEdge[]; triggerType: TriggerType } => {
   const triggerType: TriggerType = kind === 'comment'
     ? 'COMMENT_KEYWORD'
     : kind === 'form' || kind === 'dm'
@@ -250,8 +259,8 @@ const buildNodes = (kind: StudioKind, draft: StudioDraft): { nodes: FlowNode[]; 
     repeatLimit: draft.repeatLimit,
     followUpAutomationId: draft.followUpAutomationId,
     followUpCondition: draft.followUpCondition,
-    followGateMode: kind === 'dm' && draft.followGateEnabled ? 'claim' : undefined,
-    followGatePayload: kind === 'dm' && draft.followGateEnabled ? 'FOLLOW_CLAIMED' : undefined,
+    followGateMode: draft.followGateEnabled && (kind === 'dm' || (kind === 'comment' && draft.destination !== 'comment')) ? 'claim' : undefined,
+    followGatePayload: draft.followGateEnabled && (kind === 'dm' || (kind === 'comment' && draft.destination !== 'comment')) ? followGatePayload : undefined,
   }, 0);
   const nodes: FlowNode[] = [trigger];
   const edges: FlowEdge[] = [];
@@ -289,21 +298,48 @@ const buildNodes = (kind: StudioKind, draft: StudioDraft): { nodes: FlowNode[]; 
       buttons: draft.responseButtons,
     }, 2));
   } else if (kind === 'comment' && (draft.destination === 'dm' || draft.destination === 'both')) {
-    connect(makeNode('node_private_reply', 'SEND_PRIVATE_REPLY', 'پاسخ خصوصی در دایرکت', {
-      text: draft.message,
-      responseVariants: draft.variants,
-      quickReplies: [],
-      mediaUrl: draft.responseMedia[0]?.url,
-      mediaType: draft.responseMedia[0]?.type,
-      buttons: draft.responseButtons,
-    }, 2), 'دایرکت');
+    const needsFollowGate = draft.followGateEnabled;
+    if (needsFollowGate) {
+      const followGateNode = makeNode('node_follow_gate', 'SEND_PRIVATE_REPLY', 'درخواست فالو', {
+        followGateMode: 'claim',
+        followGatePayload,
+        text: draft.followGateMessage,
+        buttons: [{ title: draft.followGateButtonTitle || 'فالو کردم', payload: followGatePayload }],
+      }, nodes.length);
+      connect(followGateNode, 'درخواست فالو');
+      const successNode = makeNode('node_follow_success', 'SEND_PRIVATE_REPLY', 'پاسخ بعد از تأیید فالو', {
+        followGateMode: 'verified',
+        text: draft.followGateSuccessMessage,
+      }, nodes.length);
+      nodes.push(successNode);
+      edges.push({ id: 'edge_follow_success', sourceNodeId: followGateNode.id, targetNodeId: successNode.id, label: 'پس از فالو', conditionValue: 'FOLLOW_CLAIMED' });
+      const contentNode = makeNode('node_follow_content', 'SEND_PRIVATE_REPLY', 'محتوای سناریو', {
+        text: draft.message,
+        responseVariants: draft.variants,
+        quickReplies: [],
+        mediaUrl: draft.responseMedia[0]?.url,
+        mediaType: draft.responseMedia[0]?.type,
+        buttons: draft.responseButtons,
+      }, nodes.length);
+      nodes.push(contentNode);
+      edges.push({ id: 'edge_follow_content', sourceNodeId: successNode.id, targetNodeId: contentNode.id, label: 'ارسال محتوای سناریو' });
+    } else {
+      connect(makeNode('node_private_reply', 'SEND_PRIVATE_REPLY', 'پاسخ خصوصی در دایرکت', {
+        text: draft.message,
+        responseVariants: draft.variants,
+        quickReplies: [],
+        mediaUrl: draft.responseMedia[0]?.url,
+        mediaType: draft.responseMedia[0]?.type,
+        buttons: draft.responseButtons,
+      }, nodes.length), 'دایرکت');
+    }
   } else if (kind === 'dm') {
     if (draft.followGateEnabled) {
       const followGateNode = makeNode('node_follow_gate', 'SEND_PRIVATE_REPLY', 'درخواست فالو', {
         followGateMode: 'claim',
-        followGatePayload: 'FOLLOW_CLAIMED',
+        followGatePayload,
         text: draft.followGateMessage,
-        buttons: [{ title: draft.followGateButtonTitle || 'فالو کردم', payload: 'FOLLOW_CLAIMED' }],
+        buttons: [{ title: draft.followGateButtonTitle || 'فالو کردم', payload: followGatePayload }],
       }, 1);
       connect(followGateNode, 'درخواست فالو');
       const successNode = makeNode('node_follow_success', 'SEND_PRIVATE_REPLY', 'پاسخ بعد از تأیید فالو', {
@@ -318,6 +354,17 @@ const buildNodes = (kind: StudioKind, draft: StudioDraft): { nodes: FlowNode[]; 
       }, 2);
       nodes.push(successNode);
       edges.push({ id: 'edge_follow_success', sourceNodeId: followGateNode.id, targetNodeId: successNode.id, label: 'پس از فالو', conditionValue: 'FOLLOW_CLAIMED' });
+      const contentNode = makeNode('node_follow_content', 'SEND_PRIVATE_REPLY', 'محتوای سناریو', {
+        text: draft.message,
+        responseVariants: draft.variants,
+        quickReplies: [],
+        linkMessage: draft.linkMessage,
+        mediaUrl: draft.responseMedia[0]?.url,
+        mediaType: draft.responseMedia[0]?.type,
+        buttons: draft.responseButtons,
+      }, 3);
+      nodes.push(contentNode);
+      edges.push({ id: 'edge_follow_content', sourceNodeId: successNode.id, targetNodeId: contentNode.id, label: 'ارسال محتوای سناریو' });
     } else {
       connect(makeNode('node_private_reply', 'SEND_PRIVATE_REPLY', 'ارسال پاسخ دایرکت', {
         text: draft.message,
@@ -333,15 +380,23 @@ const buildNodes = (kind: StudioKind, draft: StudioDraft): { nodes: FlowNode[]; 
   return { nodes, edges, triggerType };
 };
 
-const updateAutomation = (automation: Automation, kind: StudioKind, draft: StudioDraft): Automation => {
-  const built = buildNodes(kind, draft);
+const updateAutomation = (automation: Automation, kind: StudioKind, draft: StudioDraft, graph?: { nodes: FlowNode[]; edges: FlowEdge[] }): Automation => {
+  const followGatePayload = draft.followGatePayload === 'FOLLOW_CLAIMED'
+    ? `FOLLOW_CLAIMED:${automation.id}`
+    : draft.followGatePayload;
+  const built = graph ? {
+    nodes: graph.nodes,
+    edges: graph.edges,
+    triggerType: (graph.nodes.find((node) => node.type === 'TRIGGER')?.config.triggerType || automation.triggerType) as TriggerType,
+  } : buildNodes(kind, { ...draft, followGatePayload }, followGatePayload);
+  const graphTrigger = built.nodes.find((node) => node.type === 'TRIGGER');
   const now = new Date().toISOString();
   return {
     ...automation,
     name: draft.name.trim() || kindLabels[kind],
     description: draft.description.trim(),
     triggerType: built.triggerType,
-    keywords: draft.keywords,
+    keywords: graphTrigger?.config.keywords || draft.keywords,
     updatedAt: now,
     currentVersion: {
       ...automation.currentVersion,
@@ -364,8 +419,11 @@ export const AutomationsView: React.FC<AutomationsViewProps> = ({
 }) => {
   const [selectedAutoId, setSelectedAutoId] = useState(automations[0]?.id || '');
   const [isBuilding, setIsBuilding] = useState(false);
+  const [editorMode, setEditorMode] = useState<EditorMode>('simple');
   const [studioKind, setStudioKind] = useState<StudioKind>(automations[0] ? inferKind(automations[0]) : 'dm');
   const [draft, setDraft] = useState<StudioDraft>(() => automations[0] ? draftFromAutomation(automations[0]) : defaultDraft('dm'));
+  const [visualNodes, setVisualNodes] = useState<FlowNode[]>(() => automations[0]?.currentVersion?.nodes || []);
+  const [visualEdges, setVisualEdges] = useState<FlowEdge[]>(() => automations[0]?.currentVersion?.edges || []);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | StudioKind>('all');
   const [saving, setSaving] = useState(false);
@@ -412,9 +470,16 @@ export const AutomationsView: React.FC<AutomationsViewProps> = ({
 
   const startEditing = (automation: Automation, forcedKind?: StudioKind) => {
     const kind = forcedKind || inferKind(automation);
+    const initialDraft = forcedKind && forcedKind !== inferKind(automation) ? defaultDraft(forcedKind) : draftFromAutomation(automation);
+    const initialGraph = forcedKind && forcedKind !== inferKind(automation)
+      ? buildNodes(forcedKind, initialDraft)
+      : { nodes: automation.currentVersion?.nodes || [], edges: automation.currentVersion?.edges || [] };
     setSelectedAutoId(automation.id);
     setStudioKind(kind);
-    setDraft(forcedKind && forcedKind !== inferKind(automation) ? defaultDraft(forcedKind) : draftFromAutomation(automation));
+    setDraft(initialDraft);
+    setVisualNodes(initialGraph.nodes);
+    setVisualEdges(initialGraph.edges);
+    setEditorMode('simple');
     setTestResult([]);
     setError('');
     setIsBuilding(true);
@@ -437,30 +502,54 @@ export const AutomationsView: React.FC<AutomationsViewProps> = ({
   };
 
   const saveDraft = async () => {
-    if (!selectedAuto) return;
+    if (!selectedAuto) return false;
     if (!draft.name.trim()) {
       setError('برای سناریو یک نام کوتاه وارد کنید.');
-      return;
+      return false;
     }
-    if (studioKind !== 'followup' && draft.keywords.length === 0) {
+    const triggerNode = visualNodes.find((node) => node.type === 'TRIGGER');
+    const activeKeywords = editorMode === 'visual' ? triggerNode?.config.keywords || [] : draft.keywords;
+    if (studioKind !== 'followup' && activeKeywords.length === 0) {
       setError('حداقل یک کلمهٔ فعال‌ساز اضافه کنید.');
-      return;
+      return false;
     }
     setSaving(true);
     setError('');
     try {
-      const saved = await onSaveAutomation(updateAutomation(selectedAuto, studioKind, draft));
+      const graph = editorMode === 'visual' && visualNodes.length > 0 ? { nodes: visualNodes, edges: visualEdges } : undefined;
+      const saved = await onSaveAutomation(updateAutomation(selectedAuto, studioKind, draft, graph));
       if (saved) setSelectedAutoId(saved.id);
+      return true;
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'ذخیرهٔ پیش‌نویس ناموفق بود.');
+      return false;
     } finally {
       setSaving(false);
     }
   };
 
   const publish = async () => {
-    await saveDraft();
-    if (selectedAuto) await onPublishAutomation(selectedAuto.id);
+    const saved = await saveDraft();
+    if (saved && selectedAuto) await onPublishAutomation(selectedAuto.id);
+  };
+
+  const switchEditorMode = (nextMode: EditorMode) => {
+    if (nextMode === editorMode) return;
+    if (nextMode === 'visual') {
+      const followGatePayload = draft.followGatePayload === 'FOLLOW_CLAIMED' && selectedAuto
+        ? `FOLLOW_CLAIMED:${selectedAuto.id}`
+        : draft.followGatePayload;
+      const built = buildNodes(studioKind, { ...draft, followGatePayload }, followGatePayload);
+      setVisualNodes(built.nodes);
+      setVisualEdges(built.edges);
+      setEditorMode('visual');
+      return;
+    }
+    if (selectedAuto && visualNodes.length > 0) {
+      const graphAutomation = updateAutomation(selectedAuto, studioKind, draft, { nodes: visualNodes, edges: visualEdges });
+      setDraft(draftFromAutomation(graphAutomation));
+    }
+    setEditorMode('simple');
   };
 
   const deleteScenario = async (automation: Automation) => {
@@ -585,14 +674,14 @@ export const AutomationsView: React.FC<AutomationsViewProps> = ({
         <>
           <div className="builder-toolbar direct-builder-toolbar">
             <div className="builder-toolbar-title"><button type="button" className="direct-back-btn" onClick={() => setIsBuilding(false)} aria-label="بازگشت به لیست"><ArrowLeft size={17} /></button><span className="direct-toolbar-icon"><Settings2 size={17} /></span><div><strong>{kindLabels[studioKind]}</strong><small>ساخت مرحله‌ای سناریو · پیش‌نمایش زنده</small></div></div>
-            <div className="direct-toolbar-actions"><span className="direct-save-state"><span className="direct-status-dot" /> پیش‌نویس ذخیره‌نشده</span><button type="button" className="btn btn-outline-secondary direct-secondary-btn" onClick={saveDraft} disabled={saving}><Check size={16} /> {saving ? 'در حال ذخیره...' : 'ذخیره پیش‌نویس'}</button><button type="button" className="btn btn-primary direct-primary-btn" onClick={publish} disabled={saving}>انتشار سناریو <ArrowLeft size={15} /></button></div>
+            <div className="direct-toolbar-actions"><div className="direct-editor-mode" role="tablist" aria-label="روش ساخت سناریو"><button type="button" className={editorMode === 'simple' ? 'is-active' : ''} onClick={() => switchEditorMode('simple')} role="tab" aria-selected={editorMode === 'simple'}>فرم ساده</button><button type="button" className={editorMode === 'visual' ? 'is-active' : ''} onClick={() => switchEditorMode('visual')} role="tab" aria-selected={editorMode === 'visual'}>نموداری</button></div><span className="direct-save-state"><span className="direct-status-dot" /> پیش‌نویس ذخیره‌نشده</span><button type="button" className="btn btn-outline-secondary direct-secondary-btn" onClick={saveDraft} disabled={saving}><Check size={16} /> {saving ? 'در حال ذخیره...' : 'ذخیره پیش‌نویس'}</button><button type="button" className="btn btn-primary direct-primary-btn" onClick={publish} disabled={saving}>انتشار سناریو <ArrowLeft size={15} /></button></div>
           </div>
 
-          <div className="direct-stepper" aria-label="مراحل ساخت سناریو"><span className="is-active"><b>۱</b> فعال‌سازی</span><i /><span className="is-active"><b>۲</b> تنظیم پاسخ</span><i /><span><b>۳</b> تست و انتشار</span></div>
+          {editorMode === 'simple' && <div className="direct-stepper" aria-label="مراحل ساخت سناریو"><span className="is-active"><b>۱</b> فعال‌سازی</span><i /><span className="is-active"><b>۲</b> تنظیم پاسخ</span><i /><span><b>۳</b> تست و انتشار</span></div>}
 
           {error && <div className="alert alert-danger direct-alert" role="alert"><CircleHelp size={16} /> {error}</div>}
 
-          <div className="direct-builder-shell">
+          {editorMode === 'visual' ? <VisualScenarioBuilder nodes={visualNodes} edges={visualEdges} onChange={(nodes, edges) => { setVisualNodes(nodes); setVisualEdges(edges); }} /> : <div className="direct-builder-shell">
             <aside className="direct-builder-preview">
               <ResponsivePreview
                 variant={studioKind === 'comment' ? 'comment' : studioKind === 'form' ? 'form' : 'dm'}
@@ -601,7 +690,7 @@ export const AutomationsView: React.FC<AutomationsViewProps> = ({
                 keyword={draft.keywords[0] || 'سلام'}
                 formFields={draft.questions.map((question) => question.label)}
                 media={draft.responseMedia}
-                buttons={draft.followGateEnabled ? [{ title: draft.followGateButtonTitle, payload: 'FOLLOW_CLAIMED' }, ...draft.responseButtons] : draft.responseButtons}
+                buttons={draft.followGateEnabled ? [{ title: draft.followGateButtonTitle, payload: draft.followGatePayload }, ...draft.responseButtons] : draft.responseButtons}
                 onAddText={() => addVariant()}
                 onAddMedia={(media) => updateDraft('responseMedia', [...draft.responseMedia.filter((item) => item.type !== media.type), media])}
                 onAddButton={(button) => updateDraft('responseButtons', [...draft.responseButtons, button])}
@@ -630,7 +719,7 @@ export const AutomationsView: React.FC<AutomationsViewProps> = ({
 
               {studioKind !== 'form' && studioKind !== 'followup' && <section className="direct-panel"><PanelHeading label="تنظیمات پاسخ" title="پیام را ساده، انسانی و متنوع نگه دارید" number="۰۳" /><VariantEditor label="پاسخ‌های متنوع دایرکت" values={draft.variants} onAdd={() => addVariant()} onChange={(index, value) => updateVariant(index, value)} onRemove={(index) => removeVariant(index)} /><div className="direct-helper"><Sparkles size={16} /><span>برای هر اجرا یکی از متن‌ها به‌صورت چرخشی انتخاب می‌شود تا پاسخ‌ها تکراری و ماشینی به نظر نرسند.</span></div>{studioKind === 'dm' && <ToggleField label="لینک یا دکمهٔ مشاهدهٔ خدمات اضافه شود" checked={draft.linkMessage} onChange={(value) => updateDraft('linkMessage', value)} />}</section>}
 
-              {studioKind === 'dm' && <FollowGateEditor draft={draft} updateDraft={updateDraft} />}
+              {((studioKind === 'dm') || (studioKind === 'comment' && (draft.destination === 'dm' || draft.destination === 'both'))) && <FollowGateEditor draft={draft} updateDraft={updateDraft} />}
 
               {studioKind === 'comment' && <section className="direct-panel"><PanelHeading label="پاسخ عمومی" title="پاسخ زیر همان پست" number="۰۴" /><VariantEditor label="پاسخ‌های متنوع زیر کامنت" values={draft.publicVariants} onAdd={() => addVariant(true)} onChange={(index, value) => updateVariant(index, value, true)} onRemove={(index) => removeVariant(index, true)} /></section>}
 
@@ -639,7 +728,7 @@ export const AutomationsView: React.FC<AutomationsViewProps> = ({
 
               <section className="direct-test-panel"><div><span className="direct-eyebrow">آزمایش امن</span><h3>قبل از انتشار، سناریو را شبیه‌سازی کنید</h3><p>این تست فقط در پنل اجرا می‌شود و هیچ پیام واقعی ارسال نمی‌کند.</p></div><button type="button" className="btn btn-warning direct-test-btn" onClick={runTest} disabled={testing}>{testing ? 'در حال تست...' : 'اجرای تست'}</button>{testResult.length > 0 && <div className="direct-test-result">{testResult.map((line) => <div key={line}><Check size={14} /> {line}</div>)}</div>}</section>
             </div>
-          </div>
+          </div>}
         </>
       )}
     </div>

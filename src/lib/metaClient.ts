@@ -2,6 +2,7 @@ export interface InstagramProfile {
   id: string;
   username: string;
   name?: string;
+  profile_pic?: string;
   profile_picture_url?: string;
   account_type?: 'BUSINESS' | 'CREATOR';
   user_id?: string;
@@ -74,7 +75,10 @@ export async function getInstagramUserProfile(
 ): Promise<InstagramProfile> {
   const accessToken = options.accessToken?.trim();
   if (!accessToken) throw new Error('INSTAGRAM_ACCESS_TOKEN is not configured');
-  const baseFields = ['id', 'username', 'name', 'profile_picture_url'];
+  // The user-profile endpoint for an Instagram-scoped messaging user uses
+  // `profile_pic`. `profile_picture_url` belongs to other Graph API shapes
+  // and causes the whole request to fail when included here.
+  const baseFields = ['username', 'name', 'profile_pic'];
   const followFields = ['is_user_follow_business', 'is_business_follow_user'];
   const fields = (options.includeFollowStatus ? [...baseFields, ...followFields] : baseFields).join(',');
   const url = `${getBaseUrl(options)}/${encodeURIComponent(options.userId)}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(accessToken)}`;

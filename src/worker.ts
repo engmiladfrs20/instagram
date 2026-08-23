@@ -1019,7 +1019,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
           graphVersion: instagramAccount.graphVersion,
           userId: String(fromUser.id),
         });
-        fromUser = { ...fromUser, ...profile, id: String(fromUser.id) };
+        fromUser = { ...fromUser, ...profile, id: String(fromUser.id), profile_picture_url: profile.profile_picture_url || profile.profile_pic };
       }
     } catch (error) {
       console.log(JSON.stringify({ event: 'instagram_sender_profile_lookup_failed', error: error instanceof Error ? error.message : String(error) }));
@@ -1067,7 +1067,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
     contact.lastSeenAt = now;
     if (fromUser.username) contact.username = String(fromUser.username);
     if (fromUser.name) contact.displayName = String(fromUser.name);
-    if (fromUser.profile_picture_url) contact.avatarUrl = String(fromUser.profile_picture_url);
+    if (fromUser.profile_picture_url || fromUser.profile_pic) contact.avatarUrl = String(fromUser.profile_picture_url || fromUser.profile_pic);
   }
 
   let conversation = conversations.find((item) => item.contactId === contact!.id);
@@ -1144,7 +1144,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
           followStatus = followValue === true ? 'verified' : followValue === false ? 'not_verified' : 'unavailable';
         }
       } catch (error) {
-        console.log(JSON.stringify({ event: 'instagram_follow_status_unavailable', userId: String(fromUser.id), error: error instanceof Error ? error.message : String(error) }));
+        console.log(JSON.stringify({ event: 'instagram_follow_status_unavailable', userId: String(fromUser.id), graphHost: instagramAccount.graphHost, graphVersion: instagramAccount.graphVersion, error: error instanceof Error ? error.message : String(error) }));
       }
     }
     contact.customFields.follow_status = followStatus;
@@ -1721,7 +1721,7 @@ export default {
             });
             instagramAccount.username = profile.username || instagramAccount.username;
             instagramAccount.displayName = profile.name || profile.username || instagramAccount.displayName;
-            instagramAccount.profilePicUrl = profile.profile_picture_url || undefined;
+            instagramAccount.profilePicUrl = profile.profile_picture_url || profile.profile_pic || undefined;
             await persistWorkerState(env);
           }
         } catch (error) {

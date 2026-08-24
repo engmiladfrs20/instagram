@@ -36,6 +36,7 @@ import {
   listInstagramMedia,
   sendInstagramMessage,
 } from './lib/metaClient';
+import { getWebhookIdentity } from './lib/webhookDedupe';
 
 type Env = Cloudflare.Env & {
   META_APP_SECRET?: string;
@@ -44,6 +45,10 @@ type Env = Cloudflare.Env & {
   GEMINI_API_KEY?: string;
   META_LIVE_MODE?: string;
 };
+
+// The Instagram User Profile API documentation currently uses v23.0 for
+// Instagram Login. Legacy v20 accounts are upgraded when their state loads.
+const INSTAGRAM_GRAPH_VERSION = 'v23.0';
 
 // In-Memory Database State for Worker instance
 let workspace = { ...INITIAL_WORKSPACE };
@@ -83,6 +88,12 @@ const AUTOMATION_TEXT_REPAIRS: Record<
 };
 
 const CORRECT_AUTOMATION_TEXT_REPAIRS: typeof AUTOMATION_TEXT_REPAIRS = {
+  [SAMPLE_AUTOMATION_ID]: {
+    keywords: ['قیمت', 'لینک', 'راهنما'],
+    triggerKeywords: ['قیمت', 'لینک', 'راهنما'],
+    publicReply: 'سلام! جزئیات کامل برای شما به دایرکت ارسال شد. 📩',
+    privateReply: 'لطفاً ابتدا پیج ما را فالو کنید و سپس روی دکمه «فالو دارم» بزنید تا ادامه سناریو برای شما ارسال شود.',
+  },
   auto_comment_price: {
     keywords: ['\u0642\u06cc\u0645\u062a', '\u0642\u06cc\u0645\u062a\u0634', '\u0686\u0646\u062f\u0647', '\u0644\u06cc\u0646\u06a9', '\u062e\u0631\u06cc\u062f', '\u0633\u0641\u0627\u0631\u0634', '\u062a\u062e\u0641\u06cc\u0641'],
     triggerKeywords: ['\u0642\u06cc\u0645\u062a', '\u0642\u06cc\u0645\u062a\u0634', '\u0686\u0646\u062f\u0647', '\u0644\u06cc\u0646\u06a9', '\u062e\u0631\u06cc\u062f', '\u0633\u0641\u0627\u0631\u0634', '\u062a\u062e\u0641\u06cc\u0641'],
@@ -111,7 +122,8 @@ function repairAutomationTextEncoding(): boolean {
       ...versions.flatMap((version) => version!.nodes.flatMap((node) => (node.config.keywords || []).map(String))),
     ];
     const hasMojibake = keywordValues.some((value) => /[ظغ][^\s]{0,4}[طی]/.test(value));
-    if (!hasMojibake) continue;
+    const sampleNeedsRepair = auto.id === SAMPLE_AUTOMATION_ID && !(auto.keywords || []).includes('قیمت');
+    if (!hasMojibake && !sampleNeedsRepair) continue;
 
     auto.keywords = [...repair.keywords];
     for (const version of versions) {
@@ -128,6 +140,18 @@ function repairAutomationTextEncoding(): boolean {
       if (repair.faqReply) {
         const faqReply = version!.nodes.find((node) => node.type === 'SEND_QUICK_REPLIES');
         if (faqReply) faqReply.config.text = repair.faqReply;
+      }
+      if (auto.id === SAMPLE_AUTOMATION_ID) {
+        const followSuccess = version!.nodes.find((node) => node.id === 'sample_follow_success');
+        const followContent = version!.nodes.find((node) => node.id === 'sample_follow_content');
+        if (followSuccess) followSuccess.config.text = 'ممنون که پیج را فالو کردید! حالا محتوای درخواستی برای شما ارسال می‌شود.';
+        if (followContent) {
+          followContent.config.text = 'این پیام نمونه است؛ پاسخ واقعی کسب‌وکار را اینجا بنویسید.';
+          followContent.config.responseVariants = [
+            'محتوای درخواستی شما آماده شد ✅',
+            'راهنمای شما آماده است. اگر سؤال دیگری دارید همین‌جا بنویسید 💬',
+          ];
+        }
       }
     }
     auto.updatedAt = new Date().toISOString();
@@ -233,6 +257,10 @@ async function loadWorkerState(env: Env, workspaceId = INITIAL_WORKSPACE.id) {
     auditLogs = saved.auditLogs || auditLogs;
     analytics = saved.analytics || analytics;
     let stateChanged = repairAutomationTextEncoding();
+    if (instagramAccount.graphHost === 'graph.instagram.com' && instagramAccount.graphVersion === 'v20.0') {
+      instagramAccount.graphVersion = INSTAGRAM_GRAPH_VERSION;
+      stateChanged = true;
+    }
     if (stateSeedVersion < DEFAULT_AUTOMATION_SEED_VERSION) {
       stateSeedVersion = DEFAULT_AUTOMATION_SEED_VERSION;
       if (!automations.some((automation) => automation.id === SAMPLE_AUTOMATION_ID)) {
@@ -326,6 +354,40 @@ async function sha256Hex(text: string): Promise<string> {
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
+}
+
+async function claimWebhookIdempotency(
+  env: Env,
+  workspaceId: string,
+  dedupeKey: string,
+  eventId: string,
+  fingerprint: string,
+): Promise<boolean> {
+  const inMemoryDuplicate = processedFingerprints.has(fingerprint);
+  if (!env.DB) return inMemoryDuplicate;
+
+  try {
+    const createdAt = new Date().toISOString();
+    const result = await env.DB.prepare(
+      'INSERT OR IGNORE INTO webhook_idempotency (workspace_id, dedupe_key, event_id, created_at) VALUES (?1, ?2, ?3, ?4)',
+    ).bind(workspaceId, dedupeKey, eventId, createdAt).run();
+    const changes = (result as any)?.meta?.changes;
+    if (typeof changes === 'number') return changes === 0;
+
+    // Keep this compatible with D1 runtimes that do not expose `meta.changes`.
+    const owner = await env.DB.prepare(
+      'SELECT event_id AS eventId FROM webhook_idempotency WHERE workspace_id = ?1 AND dedupe_key = ?2 LIMIT 1',
+    ).bind(workspaceId, dedupeKey).first<{ eventId: string }>();
+    return Boolean(owner && owner.eventId !== eventId);
+  } catch (error) {
+    // A deployment that has not applied migration 0003 should still accept
+    // webhooks. The in-memory fallback is temporary and is logged explicitly.
+    console.log(JSON.stringify({
+      event: 'webhook_idempotency_unavailable',
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    return inMemoryDuplicate;
+  }
 }
 
 function base64UrlEncode(bytes: Uint8Array): string {
@@ -952,18 +1014,36 @@ async function deliverAiReply(
   let status: Message['status'] = 'queued';
   let externalId: string | undefined;
   if (env.META_LIVE_MODE === 'true') {
-    const accessToken = await getInstagramAccessToken(env);
-    if (!accessToken) throw new Error('INSTAGRAM_ACCESS_TOKEN is not configured');
-    const url = `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/${encodeURIComponent(instagramAccount.metaIgUserId)}/messages?access_token=${encodeURIComponent(accessToken)}`;
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ recipient: { id: recipientId }, message: { text } }),
-    });
-    const result: any = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(result?.error?.message || `Meta API returned HTTP ${response.status}`);
-    status = 'sent';
-    externalId = result.message_id || result.id;
+    try {
+      const accessToken = await getInstagramAccessToken(env);
+      if (!accessToken) throw new Error('INSTAGRAM_ACCESS_TOKEN is not configured');
+      const url = `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/${encodeURIComponent(instagramAccount.metaIgUserId)}/messages?access_token=${encodeURIComponent(accessToken)}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ recipient: { id: recipientId }, message: { text } }),
+      });
+      const result: any = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result?.error?.message || `Meta API returned HTTP ${response.status}`);
+      status = 'sent';
+      externalId = result.message_id || result.id;
+    } catch (error) {
+      status = 'failed';
+      const errorReason = error instanceof Error ? error.message : String(error);
+      dlqItems.unshift({
+        id: `dlq_${crypto.randomUUID()}`,
+        jobId: `job_${crypto.randomUUID()}`,
+        actionType: 'SEND_TEXT',
+        recipientId,
+        errorReason,
+        errorClass: /token|permission|oauth|auth/i.test(errorReason) ? 'auth' : 'transient',
+        payloadSummary: text.slice(0, 160),
+        attemptCount: 1,
+        lastAttemptAt: new Date().toISOString(),
+        canReplay: true,
+      });
+      console.log(JSON.stringify({ event: 'instagram_ai_reply_failed', recipientId, error: errorReason }));
+    }
   }
   const now = new Date().toISOString();
   messages.push({
@@ -975,7 +1055,7 @@ async function deliverAiReply(
     direction: 'outbound',
     messageType: 'text',
     textBody: text,
-    content: { text },
+    content: { text, deliveryKey: `ai:${eventId}` },
     status,
     policyBasis: 'gemini_ai_assistant',
     correlationId: `corr_${eventId}`,
@@ -1150,6 +1230,15 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
     contact.customFields.follow_status = followStatus;
     if (!contact.tags.includes('follow_confirmation_received')) contact.tags.push('follow_confirmation_received');
     if (followStatus === 'verified' && !contact.tags.includes('instagram_follower_verified')) contact.tags.push('instagram_follower_verified');
+    console.log(JSON.stringify({
+      event: 'instagram_follow_confirmation_received',
+      eventId,
+      userId: String(fromUser.id),
+      replyPayload: String(replyPayload || ''),
+      followStatus,
+      graphHost: instagramAccount.graphHost,
+      graphVersion: instagramAccount.graphVersion,
+    }));
   }
 
   const context: IncomingContext = {
@@ -1186,30 +1275,63 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
   automation.runCount += 1;
   automation.lastTriggeredAt = now;
 
-  const recordOutbound = async (messageType: Message['messageType'], content: Message['content'], policyBasis: string) => {
+  const recordOutbound = async (messageType: Message['messageType'], content: Message['content'], policyBasis: string, nodeId?: string) => {
+    const deliveryKey = isFollowConfirmation
+      ? `follow:${contact!.id}:${automation.id}:${nodeId || messageType}:${String(replyPayload || 'FOLLOW_CLAIMED')}`
+      : `event:${String(externalMessageId)}:${nodeId || messageType}:${messageType}`;
+    const storedContent = content.deliveryKey ? content : { ...content, deliveryKey };
+    const alreadyDelivered = messages.some((message) =>
+      message.direction === 'outbound'
+      && message.status !== 'failed'
+      && message.content.deliveryKey === deliveryKey,
+    );
+    if (alreadyDelivered) {
+      console.log(JSON.stringify({ event: 'instagram_outbound_deduped', eventId, deliveryKey, messageType }));
+      return;
+    }
+
     let status: Message['status'] = 'queued';
     let externalId: string | undefined;
-    if (env.META_LIVE_MODE === 'true' && (content.text || content.mediaUrl || content.buttons?.length)) {
-      const accessToken = (await getInstagramAccessToken(env)) || '';
-      const isPublicCommentReply = messageType === 'public_comment_reply' && isComment && externalMessageId;
-      if (isPublicCommentReply) {
-        const url = `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/${encodeURIComponent(String(externalMessageId))}/replies?access_token=${encodeURIComponent(accessToken)}`;
-        const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: content.text || '' }) });
-        const result: any = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(result?.error?.message || `Meta API returned HTTP ${response.status}`);
-        externalId = result.id;
-      } else {
-        const result = await sendInstagramMessage({
-          accessToken,
-          graphHost: instagramAccount.graphHost,
-          graphVersion: instagramAccount.graphVersion,
-          instagramUserId: instagramAccount.metaIgUserId,
+    if (env.META_LIVE_MODE === 'true' && (storedContent.text || storedContent.mediaUrl || storedContent.buttons?.length || storedContent.quickReplies?.length)) {
+      try {
+        const accessToken = await getInstagramAccessToken(env);
+        if (!accessToken) throw new Error('INSTAGRAM_ACCESS_TOKEN is not configured');
+        const isPublicCommentReply = messageType === 'public_comment_reply' && isComment && externalMessageId;
+        if (isPublicCommentReply) {
+          const url = `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/${encodeURIComponent(String(externalMessageId))}/replies?access_token=${encodeURIComponent(accessToken)}`;
+          const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: storedContent.text || '' }) });
+          const result: any = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(result?.error?.message || `Meta API returned HTTP ${response.status}`);
+          externalId = result.id;
+        } else {
+          const result = await sendInstagramMessage({
+            accessToken,
+            graphHost: instagramAccount.graphHost,
+            graphVersion: instagramAccount.graphVersion,
+            instagramUserId: instagramAccount.metaIgUserId,
+            recipientId: String(fromUser.id),
+            content: storedContent,
+          });
+          externalId = result.message_id;
+        }
+        status = 'sent';
+      } catch (error) {
+        status = 'failed';
+        const errorReason = error instanceof Error ? error.message : String(error);
+        dlqItems.unshift({
+          id: `dlq_${crypto.randomUUID()}`,
+          jobId: `job_${crypto.randomUUID()}`,
+          actionType: messageType,
           recipientId: String(fromUser.id),
-          content,
+          errorReason,
+          errorClass: /token|permission|oauth|auth/i.test(errorReason) ? 'auth' : 'transient',
+          payloadSummary: String(storedContent.text || messageType).slice(0, 160),
+          attemptCount: 1,
+          lastAttemptAt: new Date().toISOString(),
+          canReplay: true,
         });
-        externalId = result.message_id;
+        console.log(JSON.stringify({ event: 'instagram_outbound_failed', eventId, deliveryKey, messageType, error: errorReason }));
       }
-      status = 'sent';
     }
     const sentAt = new Date().toISOString();
     messages.push({
@@ -1221,7 +1343,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
       direction: 'outbound',
       messageType,
       textBody: content.text,
-      content,
+      content: storedContent,
       status,
       policyBasis,
       correlationId: `corr_${eventId}`,
@@ -1246,14 +1368,14 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
   for (const node of executableNodes(runtimeVersion(automation, context), context)) {
     if (node.type === 'REPLY_PUBLIC_COMMENT' && isComment && node.config.commentReplyDestination !== 'dm') {
       const publicText = chooseVariant(node.config.publicResponseVariants, node.config.publicReplyText);
-      if (publicText) await recordOutbound('public_comment_reply', { text: publicText }, 'public_comment_moderation');
-    } else if (node.type === 'SEND_PRIVATE_REPLY' && (node.config.text || node.config.mediaUrl || node.config.buttons?.length) && !(isComment && node.config.commentReplyDestination === 'comment')) {
+      if (publicText) await recordOutbound('public_comment_reply', { text: publicText }, 'public_comment_moderation', node.id);
+    } else if (node.type === 'SEND_PRIVATE_REPLY' && (node.config.text || node.config.mediaUrl || node.config.buttons?.length || node.config.quickReplies?.length) && !(isComment && node.config.commentReplyDestination === 'comment')) {
       const privateText = chooseVariant(node.config.responseVariants, node.config.text);
-      await recordOutbound('private_reply', { text: privateText, quickReplies: node.config.quickReplies, buttons: node.config.buttons, mediaUrl: node.config.mediaUrl, mediaType: node.config.mediaType, isPrivateReply: true }, 'comment_to_dm_7day_rule');
-    } else if (node.type === 'SEND_TEXT' && (node.config.text || node.config.mediaUrl || node.config.buttons?.length)) {
-      await recordOutbound('text', { text: node.config.text, buttons: node.config.buttons, mediaUrl: node.config.mediaUrl, mediaType: node.config.mediaType }, 'automation');
+      await recordOutbound('private_reply', { text: privateText, quickReplies: node.config.quickReplies, buttons: node.config.buttons, mediaUrl: node.config.mediaUrl, mediaType: node.config.mediaType, isPrivateReply: true }, 'comment_to_dm_7day_rule', node.id);
+    } else if (node.type === 'SEND_TEXT' && (node.config.text || node.config.mediaUrl || node.config.buttons?.length || node.config.quickReplies?.length)) {
+      await recordOutbound('text', { text: node.config.text, buttons: node.config.buttons, quickReplies: node.config.quickReplies, mediaUrl: node.config.mediaUrl, mediaType: node.config.mediaType }, 'automation', node.id);
     } else if (node.type === 'SEND_QUICK_REPLIES' && (node.config.text || node.config.quickReplies?.length || node.config.mediaUrl || node.config.buttons?.length)) {
-      await recordOutbound('quick_reply', { text: node.config.text, quickReplies: node.config.quickReplies, buttons: node.config.buttons, mediaUrl: node.config.mediaUrl, mediaType: node.config.mediaType }, 'automation');
+      await recordOutbound('quick_reply', { text: node.config.text, quickReplies: node.config.quickReplies, buttons: node.config.buttons, mediaUrl: node.config.mediaUrl, mediaType: node.config.mediaType }, 'automation', node.id);
     } else if (node.type === 'ADD_TAG' && node.config.tagToAdd && !contact.tags.includes(node.config.tagToAdd)) {
       contact.tags.push(node.config.tagToAdd);
     } else if (node.type === 'SET_CONTACT_FIELD' && node.config.fieldToSet) {
@@ -1353,16 +1475,18 @@ export default {
         }
       }
 
-      const canonicalString = JSON.stringify(payload);
-      const hash = await sha256Hex(`meta_${canonicalString}`);
+      const webhookIdentity = getWebhookIdentity(payload);
+      const hash = await sha256Hex(`meta_${webhookIdentity.dedupeKey}`);
       const fingerprint = hash.slice(0, 32);
 
       // An invalid request must never be classified as a duplicate. Otherwise a
       // repeated unsigned payload can hide an authentication failure in analytics.
-      const isDuplicate = signatureValid && processedFingerprints.has(fingerprint);
-      const eventId = `whe_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+      const eventId = `whe_${Date.now()}_${crypto.randomUUID()}`;
+      const isDuplicate = signatureValid
+        ? await claimWebhookIdempotency(env, workspace.id, webhookIdentity.dedupeKey, eventId, fingerprint)
+        : false;
 
-      const eventType = payload?.entry?.[0]?.changes?.[0]?.field || 'messages';
+      const eventType = webhookIdentity.eventType;
       console.log(
         JSON.stringify({
           event: 'meta_webhook_received',
@@ -1380,7 +1504,7 @@ export default {
         workspaceId: workspace.id,
         instagramAccountId: instagramAccount.id,
         eventType,
-        externalEventId: payload?.entry?.[0]?.id || `evt_${Date.now()}`,
+        externalEventId: webhookIdentity.externalId || payload?.entry?.[0]?.id || `evt_${Date.now()}`,
         fingerprint,
         signatureValid,
         payload,
@@ -1562,6 +1686,7 @@ export default {
         const longToken = await longTokenResponse.json<any>().catch(() => ({}));
         const accessToken = longToken.access_token || shortToken.access_token;
         if (!longTokenResponse.ok || !accessToken) throw new Error(longToken?.error?.message || `Long-lived token exchange failed (${longTokenResponse.status})`);
+        if (instagramAccount.graphHost === 'graph.instagram.com') instagramAccount.graphVersion = INSTAGRAM_GRAPH_VERSION;
         const profileResponse = await fetchWithTimeout(`https://graph.instagram.com/${instagramAccount.graphVersion}/me?fields=id,username,name,profile_picture_url,account_type,user_id&access_token=${encodeURIComponent(accessToken)}`);
         const profile = await profileResponse.json<any>().catch(() => ({}));
         if (!profileResponse.ok || !profile.username) throw new Error(profile?.error?.message || `Instagram profile lookup failed (${profileResponse.status})`);
@@ -1583,6 +1708,7 @@ export default {
         instagramAccount.webhookStatus = 'active';
         instagramAccount.tokenExpiresAt = tokenExpiresAt;
         instagramAccount.lastTokenCheckAt = now;
+        instagramAccount.graphVersion = INSTAGRAM_GRAPH_VERSION;
         await persistWorkerState(env);
         return htmlResponse('<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="1;url=/"><title>Instagram connected</title></head><body><h1>Instagram connected successfully</h1><p>Returning to InstaFlow…</p><p><a href="/">Open InstaFlow</a></p></body></html>', 200);
       } catch (error) {

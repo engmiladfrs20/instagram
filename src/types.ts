@@ -96,6 +96,8 @@ export interface MessageContent {
   text?: string;
   quickReplies?: Array<{ title: string; payload: string }>;
   buttons?: Array<{ title: string; url?: string; payload?: string }>;
+  /** Internal delivery key used to prevent duplicate Meta sends. */
+  deliveryKey?: string;
   mediaUrl?: string;
   mediaType?: 'image' | 'video' | 'audio';
   carouselItems?: Array<{ title: string; subtitle: string; imageUrl: string; price?: string; buttonText?: string; buttonUrl?: string }>;

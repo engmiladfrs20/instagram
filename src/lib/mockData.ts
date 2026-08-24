@@ -67,7 +67,7 @@ export const INITIAL_INSTAGRAM_ACCOUNT: InstagramAccount = {
   accountType: 'BUSINESS',
   authMode: 'instagram_login',
   graphHost: 'graph.instagram.com',
-  graphVersion: 'v20.0',
+  graphVersion: 'v23.0',
   grantedScopes: [
     'instagram_business_basic',
     'instagram_business_manage_messages',

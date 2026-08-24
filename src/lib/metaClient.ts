@@ -50,7 +50,7 @@ export interface MetaClientOptions {
 }
 
 function getBaseUrl(options: MetaClientOptions): string {
-  return `https://${options.graphHost || 'graph.instagram.com'}/${options.graphVersion || 'v20.0'}`;
+  return `https://${options.graphHost || 'graph.instagram.com'}/${options.graphVersion || 'v23.0'}`;
 }
 
 async function requestMeta<T>(url: string, init?: RequestInit): Promise<T> {
@@ -81,8 +81,18 @@ export async function getInstagramUserProfile(
   const baseFields = ['username', 'name', 'profile_pic'];
   const followFields = ['is_user_follow_business', 'is_business_follow_user'];
   const fields = (options.includeFollowStatus ? [...baseFields, ...followFields] : baseFields).join(',');
-  const url = `${getBaseUrl(options)}/${encodeURIComponent(options.userId)}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(accessToken)}`;
-  return requestMeta<InstagramProfile>(url);
+  const versions = Array.from(new Set([options.graphVersion || 'v23.0', 'v23.0']));
+  let lastError: unknown;
+  for (const graphVersion of versions) {
+    const baseUrl = `https://${options.graphHost || 'graph.instagram.com'}/${graphVersion}`;
+    const url = `${baseUrl}/${encodeURIComponent(options.userId)}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(accessToken)}`;
+    try {
+      return await requestMeta<InstagramProfile>(url);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('Instagram user profile lookup failed');
 }
 
 export async function listInstagramConversations(

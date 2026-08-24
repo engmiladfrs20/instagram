@@ -1087,6 +1087,13 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
   const externalMessageId = value.id || messageValue?.mid || `msg_${crypto.randomUUID()}`;
   const now = new Date().toISOString();
 
+  // Meta also emits webhook events for comments written by the connected
+  // account itself. Never feed those events back into an automation.
+  if (isComment && String(fromUser?.id || '') === String(instagramAccount.metaIgUserId || '')) {
+    console.log(JSON.stringify({ event: 'instagram_own_comment_ignored', eventId, commentId: String(externalMessageId) }));
+    return { blocked: false };
+  }
+
   // Webhook payloads often contain only the scoped user id. Enrich the
   // contact from Meta so the inbox never invents a username or avatar.
   if (!isComment && fromUser?.id && (!fromUser.username || String(fromUser.username).startsWith('user_'))) {
@@ -1275,7 +1282,12 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
   automation.runCount += 1;
   automation.lastTriggeredAt = now;
 
+  let privateReplySentForComment = false;
   const recordOutbound = async (messageType: Message['messageType'], content: Message['content'], policyBasis: string, nodeId?: string) => {
+    if (isComment && messageType === 'private_reply' && privateReplySentForComment) {
+      console.log(JSON.stringify({ event: 'instagram_private_reply_deduped', eventId, commentId: String(externalMessageId) }));
+      return;
+    }
     const deliveryKey = isFollowConfirmation
       ? `follow:${contact!.id}:${automation.id}:${nodeId || messageType}:${String(replyPayload || 'FOLLOW_CLAIMED')}`
       : `event:${String(externalMessageId)}:${nodeId || messageType}:${messageType}`;
@@ -1286,6 +1298,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
       && message.content.deliveryKey === deliveryKey,
     );
     if (alreadyDelivered) {
+      if (isComment && messageType === 'private_reply') privateReplySentForComment = true;
       console.log(JSON.stringify({ event: 'instagram_outbound_deduped', eventId, deliveryKey, messageType }));
       return;
     }
@@ -1297,6 +1310,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
         const accessToken = await getInstagramAccessToken(env);
         if (!accessToken) throw new Error('INSTAGRAM_ACCESS_TOKEN is not configured');
         const isPublicCommentReply = messageType === 'public_comment_reply' && isComment && externalMessageId;
+        const isPrivateCommentReply = messageType === 'private_reply' && isComment && externalMessageId;
         if (isPublicCommentReply) {
           const url = `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/${encodeURIComponent(String(externalMessageId))}/replies?access_token=${encodeURIComponent(accessToken)}`;
           const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: storedContent.text || '' }) });
@@ -1310,6 +1324,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
             graphVersion: instagramAccount.graphVersion,
             instagramUserId: instagramAccount.metaIgUserId,
             recipientId: String(fromUser.id),
+            commentId: isPrivateCommentReply ? String(externalMessageId) : undefined,
             content: storedContent,
           });
           externalId = result.message_id;
@@ -1333,6 +1348,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
         console.log(JSON.stringify({ event: 'instagram_outbound_failed', eventId, deliveryKey, messageType, error: errorReason }));
       }
     }
+    if (isComment && messageType === 'private_reply') privateReplySentForComment = true;
     const sentAt = new Date().toISOString();
     messages.push({
       id: `msg_out_${crypto.randomUUID()}`,

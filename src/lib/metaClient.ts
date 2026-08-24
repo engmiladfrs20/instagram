@@ -146,12 +146,14 @@ export async function sendInstagramText(
 export async function sendInstagramMessage(
   options: MetaClientOptions & {
     instagramUserId: string;
-    recipientId: string;
+    recipientId?: string;
+    commentId?: string;
     content: { text?: string; quickReplies?: Array<{ title: string; payload: string }>; buttons?: Array<{ title: string; url?: string; payload?: string }>; mediaUrl?: string; mediaType?: 'image' | 'video' | 'audio' };
   },
 ): Promise<{ message_id?: string }> {
   const accessToken = options.accessToken?.trim();
   if (!accessToken) throw new Error('INSTAGRAM_ACCESS_TOKEN is not configured');
+  if (!options.recipientId && !options.commentId) throw new Error('Instagram message recipient is not configured');
   const url = `${getBaseUrl(options)}/${encodeURIComponent(options.instagramUserId)}/messages?access_token=${encodeURIComponent(accessToken)}`;
   const content = options.content;
   const buttons = (content.buttons || []).filter((button) => button.title.trim());
@@ -183,7 +185,10 @@ export async function sendInstagramMessage(
   return requestMeta<{ message_id?: string }>(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ recipient: { id: options.recipientId }, message }),
+    body: JSON.stringify({
+      recipient: options.commentId ? { comment_id: options.commentId } : { id: options.recipientId },
+      message,
+    }),
   });
 }
 

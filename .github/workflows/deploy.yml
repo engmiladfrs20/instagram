@@ -21,7 +21,11 @@ jobs:
           node-version: 22
 
       - name: Install dependencies
-        run: npm ci
+        # npm ci currently rejects npm's lockfile when optional cross-platform
+        # @emnapi packages are pruned on a different operating system. npm
+        # install still honors the lockfile while repairing those optional
+        # platform entries on the Linux runner.
+        run: npm install --no-audit --no-fund
 
       - name: Validate types and automation flows
         run: |

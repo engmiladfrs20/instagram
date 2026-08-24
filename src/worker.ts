@@ -28,15 +28,18 @@ import {
   AuditLog,
   WorkspaceMember,
 } from './types';
-import { executableNodes, IncomingContext, matchesAutomation, normalizeText, runtimeVersion } from './lib/automationEngine';
+import { executableNodes, IncomingContext, isFollowClaimText, matchesAutomation, normalizeText, runtimeVersion } from './lib/automationEngine';
 import {
   getInstagramUserProfile,
   listInstagramConversationMessages,
   listInstagramConversations,
   listInstagramMedia,
+  replyToInstagramComment,
   sendInstagramMessage,
+  verifyInstagramAccount,
 } from './lib/metaClient';
 import { getWebhookIdentity } from './lib/webhookDedupe';
+import { isOwnInstagramComment, splitInstagramWebhookPayload } from './lib/instagramWebhook';
 
 type Env = Cloudflare.Env & {
   META_APP_SECRET?: string;
@@ -185,6 +188,16 @@ function normalizeStateReferences() {
   auditLogs = auditLogs.map((log) => ({ ...log, workspaceId }));
 }
 
+function pruneWorkerState() {
+  // The current storage model keeps one recent operational snapshot per
+  // workspace. Bound high-volume collections so a busy account cannot grow a
+  // single D1 row indefinitely. Long-term analytics remain aggregated.
+  if (messages.length > 20_000) messages = messages.slice(-20_000);
+  if (webhookEvents.length > 3_000) webhookEvents = webhookEvents.slice(0, 3_000);
+  if (dlqItems.length > 2_000) dlqItems = dlqItems.slice(0, 2_000);
+  if (auditLogs.length > 3_000) auditLogs = auditLogs.slice(0, 3_000);
+}
+
 repairAutomationTextEncoding();
 normalizeStateReferences();
 
@@ -209,12 +222,20 @@ type WorkerStateSnapshot = {
 let stateLoaded = false;
 let stateWorkspaceId = INITIAL_WORKSPACE.id;
 let stateSeedVersion = 0;
+let stateStorageVersion = 0;
 const DEFAULT_AUTOMATION_SEED_VERSION = 1;
 
-async function readSnapshotFromStorage(env: Env, workspaceId: string): Promise<WorkerStateSnapshot | null> {
+class StateConflictError extends Error {
+  constructor() {
+    super('Workspace state changed concurrently; retry the request');
+    this.name = 'StateConflictError';
+  }
+}
+
+async function readSnapshotFromStorage(env: Env, workspaceId: string): Promise<{ snapshot: WorkerStateSnapshot; version: number } | null> {
   if (env.DB) {
-    const row = await env.DB.prepare('SELECT payload FROM workspace_state WHERE workspace_id = ?1').bind(workspaceId).first<{ payload: string }>();
-    if (row?.payload) return JSON.parse(row.payload) as WorkerStateSnapshot;
+    const row = await env.DB.prepare('SELECT payload, version FROM workspace_state WHERE workspace_id = ?1').bind(workspaceId).first<{ payload: string; version: number }>();
+    if (row?.payload) return { snapshot: JSON.parse(row.payload) as WorkerStateSnapshot, version: Number(row.version || 1) };
   }
   if (!env.STATE_KV) return null;
   const saved = await env.STATE_KV.get('instaflow-state', 'json') as WorkerStateSnapshot | null;
@@ -223,7 +244,7 @@ async function readSnapshotFromStorage(env: Env, workspaceId: string): Promise<W
       'INSERT INTO workspace_state (workspace_id, payload, source, version, updated_at) VALUES (?1, ?2, ?3, 1, ?4) ON CONFLICT(workspace_id) DO NOTHING',
     ).bind(workspaceId, JSON.stringify(saved), 'kv-migration', new Date().toISOString()).run();
   }
-  return workspaceId === INITIAL_WORKSPACE.id ? saved : null;
+  return workspaceId === INITIAL_WORKSPACE.id && saved ? { snapshot: saved, version: 0 } : null;
 }
 
 async function writeSnapshotToStorage(env: Env, snapshot: WorkerStateSnapshot): Promise<void> {
@@ -237,9 +258,11 @@ async function writeSnapshotToStorage(env: Env, snapshot: WorkerStateSnapshot): 
   if (env.STATE_KV) await env.STATE_KV.put('instaflow-state', payload);
 }
 
-async function loadWorkerState(env: Env, workspaceId = INITIAL_WORKSPACE.id) {
-  if (stateLoaded && stateWorkspaceId === workspaceId) return;
-  const saved = await readSnapshotFromStorage(env, workspaceId);
+async function loadWorkerState(env: Env, workspaceId = INITIAL_WORKSPACE.id, force = false) {
+  if (!force && stateLoaded && stateWorkspaceId === workspaceId) return;
+  const stored = await readSnapshotFromStorage(env, workspaceId);
+  const saved = stored?.snapshot;
+  stateStorageVersion = stored?.version || 0;
   if (saved) {
     stateSeedVersion = saved.seedVersion || 0;
     workspace = saved.workspace || workspace;
@@ -299,6 +322,7 @@ async function loadWorkerState(env: Env, workspaceId = INITIAL_WORKSPACE.id) {
 }
 
 async function persistWorkerState(env: Env) {
+  pruneWorkerState();
   const snapshot: WorkerStateSnapshot = {
     workspace,
     members,
@@ -316,11 +340,44 @@ async function persistWorkerState(env: Env) {
     analytics,
     seedVersion: stateSeedVersion,
   };
-  const payload = JSON.stringify(snapshot);
+  let payload = JSON.stringify(snapshot);
+  const maxSnapshotBytes = 1_700_000;
+  const payloadBytes = () => new TextEncoder().encode(payload).byteLength;
+  // D1 rejects any row larger than 2 MB. Keep a safety margin for the other
+  // columns and progressively retain the newest operational records.
+  while (payloadBytes() > maxSnapshotBytes) {
+    if (webhookEvents.length > 500) {
+      webhookEvents = webhookEvents.slice(0, Math.max(500, Math.floor(webhookEvents.length * 0.75)));
+      snapshot.webhookEvents = webhookEvents;
+    } else if (auditLogs.length > 500) {
+      auditLogs = auditLogs.slice(0, Math.max(500, Math.floor(auditLogs.length * 0.75)));
+      snapshot.auditLogs = auditLogs;
+    } else if (dlqItems.length > 250) {
+      dlqItems = dlqItems.slice(0, Math.max(250, Math.floor(dlqItems.length * 0.75)));
+      snapshot.dlqItems = dlqItems;
+    } else if (messages.length > 1_000) {
+      messages = messages.slice(-Math.max(1_000, Math.floor(messages.length * 0.75)));
+      snapshot.messages = messages;
+    } else {
+      throw new Error('Workspace snapshot exceeds the safe D1 row limit');
+    }
+    payload = JSON.stringify(snapshot);
+  }
   if (env.DB) {
-    await env.DB.prepare(
-      'INSERT INTO workspace_state (workspace_id, payload, source, version, updated_at) VALUES (?1, ?2, ?3, 1, ?4) ON CONFLICT(workspace_id) DO UPDATE SET payload = excluded.payload, source = excluded.source, version = workspace_state.version + 1, updated_at = excluded.updated_at',
-    ).bind(workspace.id, payload, 'd1', new Date().toISOString()).run();
+    const updatedAt = new Date().toISOString();
+    if (stateStorageVersion > 0) {
+      const result = await env.DB.prepare(
+        'UPDATE workspace_state SET payload = ?1, source = ?2, version = version + 1, updated_at = ?3 WHERE workspace_id = ?4 AND version = ?5',
+      ).bind(payload, 'd1', updatedAt, workspace.id, stateStorageVersion).run();
+      if (Number((result as any)?.meta?.changes || 0) !== 1) throw new StateConflictError();
+      stateStorageVersion += 1;
+    } else {
+      const result = await env.DB.prepare(
+        'INSERT OR IGNORE INTO workspace_state (workspace_id, payload, source, version, updated_at) VALUES (?1, ?2, ?3, 1, ?4)',
+      ).bind(workspace.id, payload, 'd1', updatedAt).run();
+      if (Number((result as any)?.meta?.changes || 0) !== 1) throw new StateConflictError();
+      stateStorageVersion = 1;
+    }
     return;
   }
   if (env.STATE_KV) await env.STATE_KV.put('instaflow-state', payload);
@@ -388,6 +445,91 @@ async function claimWebhookIdempotency(
     }));
     return inMemoryDuplicate;
   }
+}
+
+async function releaseWebhookIdempotency(env: Env, workspaceId: string, dedupeKey: string, eventId: string): Promise<void> {
+  if (!env.DB) return;
+  await env.DB.prepare(
+    'DELETE FROM webhook_idempotency WHERE workspace_id = ?1 AND dedupe_key = ?2 AND event_id = ?3',
+  ).bind(workspaceId, dedupeKey, eventId).run();
+}
+
+async function claimOutboundDelivery(
+  env: Env,
+  workspaceId: string,
+  deliveryKey: string,
+  eventId: string,
+): Promise<boolean> {
+  if (!env.DB) {
+    return messages.some((message) =>
+      message.workspaceId === workspaceId
+      && message.direction === 'outbound'
+      && message.status !== 'failed'
+      && message.content.deliveryKey === deliveryKey,
+    );
+  }
+
+  try {
+    const now = new Date().toISOString();
+    const result = await env.DB.prepare(
+      'INSERT OR IGNORE INTO outbound_deliveries (workspace_id, delivery_key, event_id, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)',
+    ).bind(workspaceId, deliveryKey, eventId, 'processing', now, now).run();
+    const changes = (result as any)?.meta?.changes;
+    if (typeof changes === 'number' && changes === 1) return false;
+    const owner = await env.DB.prepare(
+      'SELECT event_id AS eventId FROM outbound_deliveries WHERE workspace_id = ?1 AND delivery_key = ?2 LIMIT 1',
+    ).bind(workspaceId, deliveryKey).first<{ eventId: string }>();
+    if (!owner || owner.eventId === eventId) return false;
+    // Meta does not accept an idempotency key for these sends. Never reclaim an
+    // in-flight delivery automatically: a Worker may have reached Meta and then
+    // crashed before recording success, so reclaiming could post a duplicate.
+    return true;
+  } catch (error) {
+    console.log(JSON.stringify({
+      event: 'outbound_idempotency_unavailable',
+      deliveryKey,
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    return messages.some((message) =>
+      message.workspaceId === workspaceId
+      && message.direction === 'outbound'
+      && message.status !== 'failed'
+      && message.content.deliveryKey === deliveryKey,
+    );
+  }
+}
+
+async function completeOutboundDelivery(env: Env, workspaceId: string, deliveryKey: string, eventId: string): Promise<void> {
+  if (!env.DB) return;
+  try {
+    await env.DB.prepare(
+      'UPDATE outbound_deliveries SET status = ?1, updated_at = ?2 WHERE workspace_id = ?3 AND delivery_key = ?4 AND event_id = ?5',
+    ).bind('sent', new Date().toISOString(), workspaceId, deliveryKey, eventId).run();
+  } catch (error) {
+    console.log(JSON.stringify({ event: 'outbound_idempotency_complete_failed', deliveryKey, error: error instanceof Error ? error.message : String(error) }));
+  }
+}
+
+async function releaseOutboundDelivery(env: Env, workspaceId: string, deliveryKey: string, eventId: string): Promise<void> {
+  if (!env.DB) return;
+  try {
+    await env.DB.prepare(
+      'DELETE FROM outbound_deliveries WHERE workspace_id = ?1 AND delivery_key = ?2 AND event_id = ?3 AND status = ?4',
+    ).bind(workspaceId, deliveryKey, eventId, 'processing').run();
+  } catch (error) {
+    console.log(JSON.stringify({ event: 'outbound_idempotency_release_failed', deliveryKey, error: error instanceof Error ? error.message : String(error) }));
+  }
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  const leftBytes = new TextEncoder().encode(left);
+  const rightBytes = new TextEncoder().encode(right);
+  let mismatch = leftBytes.length ^ rightBytes.length;
+  const length = Math.max(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index += 1) {
+    mismatch |= (leftBytes[index] || 0) ^ (rightBytes[index] || 0);
+  }
+  return mismatch === 0;
 }
 
 function base64UrlEncode(bytes: Uint8Array): string {
@@ -465,6 +607,35 @@ async function createSession(env: Env, userId: string): Promise<{ token: string;
   const expiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
   await env.DB!.prepare('INSERT INTO sessions (token_hash, user_id, expires_at, created_at, last_seen_at) VALUES (?1, ?2, ?3, ?4, ?4)').bind(tokenHash, userId, expiresAt, createdAt).run();
   return { token, expiresAt };
+}
+
+async function consumeAuthRateLimit(
+  env: Env,
+  scope: 'login' | 'register',
+  identity: string,
+  limit: number,
+  windowSeconds: number,
+): Promise<{ allowed: boolean; retryAfter: number }> {
+  if (!env.DB) return { allowed: true, retryAfter: 0 };
+  const nowMs = Date.now();
+  const bucket = Math.floor(nowMs / (windowSeconds * 1000));
+  const bucketKey = `${scope}:${await sha256Hex(identity)}:${bucket}`;
+  const expiresAt = new Date((bucket + 1) * windowSeconds * 1000).toISOString();
+  try {
+    await env.DB.prepare(
+      'INSERT INTO auth_rate_limits (bucket_key, attempts, expires_at, updated_at) VALUES (?1, 1, ?2, ?3) ON CONFLICT(bucket_key) DO UPDATE SET attempts = attempts + 1, updated_at = excluded.updated_at',
+    ).bind(bucketKey, expiresAt, new Date(nowMs).toISOString()).run();
+    const row = await env.DB.prepare('SELECT attempts FROM auth_rate_limits WHERE bucket_key = ?1').bind(bucketKey).first<{ attempts: number }>();
+    return {
+      allowed: Number(row?.attempts || 1) <= limit,
+      retryAfter: Math.max(1, Math.ceil((Date.parse(expiresAt) - nowMs) / 1000)),
+    };
+  } catch (error) {
+    // Keep authentication available while a newly deployed migration is being
+    // applied, but make the missing protection observable.
+    console.log(JSON.stringify({ event: 'auth_rate_limit_unavailable', error: error instanceof Error ? error.message : String(error) }));
+    return { allowed: true, retryAfter: 0 };
+  }
 }
 
 function sessionCookie(token: string, maxAge = 30 * 24 * 3600): string {
@@ -557,9 +728,9 @@ async function askGemini(env: Env, workspaceId: string, userText: string, channe
   const productsContext = products.slice(0, 50).map((product) => `${product.name}: ${product.description}; price=${product.priceMinor} ${product.currency}; status=${product.status}`).join('\n');
   const knowledgeContext = knowledge.map((item) => `## ${item.title}\n${item.content}`).join('\n');
   const prompt = `${settings.system_prompt}\n\nChannel: ${channel}\nBusiness products:\n${productsContext || 'No product data has been provided.'}\nBusiness knowledge:\n${knowledgeContext || 'No additional knowledge has been provided.'}\n\nCustomer message:\n${userText.slice(0, 2000)}\n\nReturn only the customer-facing answer in Persian, without markdown, internal reasoning, or invented facts.`;
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(settings.model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(settings.model)}:generateContent`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: settings.system_prompt }] },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -797,7 +968,10 @@ function jsonResponse(data: unknown, status = 200, origin = 'https://usdhunter.i
       'Access-Control-Allow-Origin': origin,
       'Vary': 'Origin',
       'Access-Control-Allow-Methods': 'GET, POST, PATCH, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Hub-Signature-256',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, Idempotency-Key, X-Hub-Signature-256',
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
     },
   });
 }
@@ -809,8 +983,21 @@ function htmlResponse(html: string, status = 200): Response {
       'Content-Type': 'text/html; charset=utf-8',
       'Cache-Control': 'public, max-age=300',
       'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      'Referrer-Policy': 'no-referrer',
+      'X-Frame-Options': 'DENY',
     },
   });
+}
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? '').replace(/[&<>'"]/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    "'": '&#39;',
+    '"': '&quot;',
+  })[character]!);
 }
 
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 15000): Promise<Response> {
@@ -1010,25 +1197,34 @@ async function deliverAiReply(
   recipientId: string,
   conversation: Conversation,
   eventId: string,
-): Promise<void> {
+  quickReplies?: Message['content']['quickReplies'],
+  idempotencySource = eventId,
+): Promise<boolean> {
+  const deliveryKey = `ai:${idempotencySource}`;
+  if (await claimOutboundDelivery(env, workspace.id, deliveryKey, eventId)) {
+    console.log(JSON.stringify({ event: 'instagram_ai_reply_deduped', eventId, deliveryKey }));
+    return true;
+  }
   let status: Message['status'] = 'queued';
   let externalId: string | undefined;
   if (env.META_LIVE_MODE === 'true') {
     try {
       const accessToken = await getInstagramAccessToken(env);
       if (!accessToken) throw new Error('INSTAGRAM_ACCESS_TOKEN is not configured');
-      const url = `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/${encodeURIComponent(instagramAccount.metaIgUserId)}/messages?access_token=${encodeURIComponent(accessToken)}`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recipient: { id: recipientId }, message: { text } }),
+      const result = await sendInstagramMessage({
+        accessToken,
+        graphHost: instagramAccount.graphHost,
+        graphVersion: instagramAccount.graphVersion,
+        instagramUserId: instagramAccount.metaIgUserId,
+        recipientId,
+        content: { text, quickReplies },
       });
-      const result: any = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result?.error?.message || `Meta API returned HTTP ${response.status}`);
       status = 'sent';
-      externalId = result.message_id || result.id;
+      externalId = result.message_id;
+      await completeOutboundDelivery(env, workspace.id, deliveryKey, eventId);
     } catch (error) {
       status = 'failed';
+      await releaseOutboundDelivery(env, workspace.id, deliveryKey, eventId);
       const errorReason = error instanceof Error ? error.message : String(error);
       dlqItems.unshift({
         id: `dlq_${crypto.randomUUID()}`,
@@ -1053,9 +1249,9 @@ async function deliverAiReply(
     conversationId: conversation.id,
     externalMessageId: externalId,
     direction: 'outbound',
-    messageType: 'text',
+    messageType: quickReplies?.length ? 'quick_reply' : 'text',
     textBody: text,
-    content: { text, deliveryKey: `ai:${eventId}` },
+    content: { text, quickReplies, deliveryKey },
     status,
     policyBasis: 'gemini_ai_assistant',
     correlationId: `corr_${eventId}`,
@@ -1066,9 +1262,23 @@ async function deliverAiReply(
   conversation.lastMessageAt = now;
   conversation.lastMessagePreview = text;
   if (status === 'sent') analytics.privateRepliesSent += 1;
+  return status !== 'failed';
 }
 
-async function processIncomingWebhookEvent(payload: any, eventId: string, env: Env): Promise<{ blocked: boolean }> {
+function hasRecentDirectInbound(conversationId: string): boolean {
+  const latestDirectInbound = messages
+    .filter((message) =>
+      message.conversationId === conversationId
+      && message.direction === 'inbound'
+      && message.messageType !== 'comment',
+    )
+    .sort((left, right) => Date.parse(right.receivedAt || right.createdAt) - Date.parse(left.receivedAt || left.createdAt))[0];
+  if (!latestDirectInbound) return false;
+  const receivedAt = Date.parse(latestDirectInbound.receivedAt || latestDirectInbound.createdAt);
+  return Number.isFinite(receivedAt) && receivedAt + 24 * 3600 * 1000 >= Date.now();
+}
+
+async function processIncomingWebhookEvent(payload: any, eventId: string, env: Env): Promise<{ blocked: boolean; deliveryFailed?: boolean; deliveryError?: string }> {
   // Instagram sends comments through entry.changes, but direct messages
   // from the Instagram Messaging webhook arrive through entry.messaging.
   // Normalize both shapes before extracting the message fields.
@@ -1080,16 +1290,23 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
   if (!value) return { blocked: false };
 
   const messageValue = value.message || value.messages?.[0];
+  const postbackValue = value.postback || messageValue?.postback;
   const isComment = field === 'comments';
-  const replyPayload = messageValue?.quick_reply?.payload || messageValue?.postback?.payload;
-  const text = String(isComment ? value.text || '' : messageValue?.text || value.text || messageValue?.postback?.title || replyPayload || '');
+  let replyPayload = messageValue?.quick_reply?.payload || postbackValue?.payload;
+  const text = String(isComment ? value.text || '' : messageValue?.text || value.text || postbackValue?.title || replyPayload || '');
   let fromUser: any = value.from || value.sender || messageValue?.from || { id: `igs_${crypto.randomUUID()}`, username: 'sample_user' };
-  const externalMessageId = value.id || messageValue?.mid || `msg_${crypto.randomUUID()}`;
+  const externalMessageId = value.id || messageValue?.mid || postbackValue?.mid || `msg_${crypto.randomUUID()}`;
   const now = new Date().toISOString();
 
   // Meta also emits webhook events for comments written by the connected
   // account itself. Never feed those events back into an automation.
-  if (isComment && String(fromUser?.id || '') === String(instagramAccount.metaIgUserId || '')) {
+  if (isComment && isOwnInstagramComment({
+    senderId: fromUser?.id,
+    senderUsername: fromUser?.username,
+    connectedAccountId: instagramAccount.metaIgUserId,
+    connectedUsername: instagramAccount.username,
+    isSelf: value?.is_self,
+  })) {
     console.log(JSON.stringify({ event: 'instagram_own_comment_ignored', eventId, commentId: String(externalMessageId) }));
     return { blocked: false };
   }
@@ -1157,6 +1374,18 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
     if (fromUser.profile_picture_url || fromUser.profile_pic) contact.avatarUrl = String(fromUser.profile_picture_url || fromUser.profile_pic);
   }
 
+  // A comment private reply is text-only. When the recipient types the
+  // confirmation (or taps an older quick-reply/button), recover the pending
+  // payload saved on the contact so the correct follow branch resumes.
+  if (!isComment && !replyPayload && isFollowClaimText(text)) {
+    replyPayload = contact.customFields.pending_follow_payload
+      || automations.flatMap((automation) => [automation.publishedVersion, automation.currentVersion])
+        .filter(Boolean)
+        .flatMap((version) => version!.nodes)
+        .find((node) => node.config.followGateMode === 'claim' && node.config.followGatePayload)
+        ?.config.followGatePayload;
+  }
+
   let conversation = conversations.find((item) => item.contactId === contact!.id);
   if (!conversation) {
     conversation = {
@@ -1167,7 +1396,9 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
       contact,
       status: 'open',
       mode: 'automation',
-      standardWindowOpenUntil: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+      // A comment does not open the standard Instagram messaging window.
+      // The window opens only after an inbound DM, quick reply or postback.
+      standardWindowOpenUntil: isComment ? new Date(0).toISOString() : new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
       lastInboundAt: now,
       lastOutboundAt: new Date(0).toISOString(),
       lastMessageAt: now,
@@ -1178,7 +1409,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
     conversations.unshift(conversation);
   } else {
     conversation.lastInboundAt = now;
-    conversation.standardWindowOpenUntil = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+    if (!isComment) conversation.standardWindowOpenUntil = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
     conversation.lastMessageAt = now;
     conversation.lastMessagePreview = text;
     conversation.unreadCount += 1;
@@ -1191,7 +1422,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
     conversationId: conversation.id,
     externalMessageId: String(externalMessageId),
     direction: 'inbound',
-    messageType: isComment ? 'comment' : replyPayload ? 'quick_reply' : 'text',
+    messageType: isComment ? 'comment' : postbackValue ? 'postback' : replyPayload ? 'quick_reply' : 'text',
     textBody: text,
     content: isComment ? { commentText: text, mediaId: value.media?.id } : { text },
     status: 'received',
@@ -1203,10 +1434,16 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
   if (isComment) analytics.totalCommentsReceived += 1;
   if (conversation.mode === 'human') return { blocked: false };
 
+  // Do not trust an old cached window by itself. Older deployments opened the
+  // 24-hour window on comments, although Meta opens it only after a DM,
+  // quick-reply or postback. Require a real recent non-comment inbound event.
+  const hasDirectMessagingWindow = Date.parse(conversation.standardWindowOpenUntil) >= Date.now()
+    && hasRecentDirectInbound(conversation.id);
+
   const isFollowConfirmation = !isComment && (
     String(replyPayload || '').toUpperCase() === 'FOLLOW_CLAIMED'
     || String(replyPayload || '').toUpperCase().startsWith('FOLLOW_CLAIMED:')
-    || ['فالو کردم', 'فالو دارم', 'followed', 'i follow'].includes(normalizeText(text))
+    || isFollowClaimText(text)
   );
   let followStatus: 'verified' | 'not_verified' | 'unavailable' = 'unavailable';
   if (isFollowConfirmation) {
@@ -1225,9 +1462,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
           });
           const followValue = typeof profile.is_user_follow_business === 'boolean'
             ? profile.is_user_follow_business
-            : typeof profile.is_business_follow_user === 'boolean'
-              ? profile.is_business_follow_user
-              : undefined;
+            : undefined;
           followStatus = followValue === true ? 'verified' : followValue === false ? 'not_verified' : 'unavailable';
         }
       } catch (error) {
@@ -1254,44 +1489,105 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
     payload,
     replyPayload,
     contactTags: contact.tags,
-    windowOpen: Date.parse(conversation.standardWindowOpenUntil) >= Date.now(),
+    windowOpen: hasDirectMessagingWindow,
     mediaId: isComment ? String(value?.media?.id || '') : undefined,
     isFollower: followStatus === 'verified' ? true : followStatus === 'not_verified' ? false : typeof fromUser.is_follower === 'boolean' ? fromUser.is_follower : undefined,
   };
   if (isFollowConfirmation && followStatus === 'not_verified') {
-    await deliverAiReply(env, 'برای دریافت این محتوا ابتدا پیج را فالو کن و سپس روی «فالو کردم» بزن.', String(fromUser.id), conversation, eventId);
-    return { blocked: false };
+    const delivered = await deliverAiReply(
+      env,
+      'هنوز فالو بودن این حساب تأیید نشد. پیج را فالو کنید و سپس روی «فالو دارم» بزنید.',
+      String(fromUser.id),
+      conversation,
+      eventId,
+      [{ title: 'فالو دارم', payload: String(replyPayload || contact.customFields.pending_follow_payload || 'FOLLOW_CLAIMED') }],
+      String(externalMessageId),
+    );
+    return { blocked: false, deliveryFailed: !delivered, deliveryError: delivered ? undefined : 'FOLLOW_RETRY_DELIVERY_FAILED' };
   }
   if (isFollowConfirmation && followStatus === 'unavailable') {
     const hasFollowGateAutomation = automations.some((item) => item.status === 'active' && [item.currentVersion, item.publishedVersion]
       .filter(Boolean)
       .some((version) => version!.nodes.some((node) => node.config.followGateMode === 'claim')));
     if (hasFollowGateAutomation) {
-      await deliverAiReply(env, 'فعلاً امکان بررسی وضعیت فالو وجود ندارد. چند لحظه بعد دوباره روی «فالو کردم» بزن.', String(fromUser.id), conversation, eventId);
-      return { blocked: false };
+      const delivered = await deliverAiReply(
+        env,
+        'فعلاً Meta امکان بررسی وضعیت فالو را در اختیار ما نگذاشت. چند لحظه بعد دوباره روی «فالو دارم» بزنید.',
+        String(fromUser.id),
+        conversation,
+        eventId,
+        [{ title: 'فالو دارم', payload: String(replyPayload || contact.customFields.pending_follow_payload || 'FOLLOW_CLAIMED') }],
+        String(externalMessageId),
+      );
+      return { blocked: false, deliveryFailed: !delivered, deliveryError: delivered ? undefined : 'FOLLOW_STATUS_UNAVAILABLE_DELIVERY_FAILED' };
     }
   }
-  const automation = automations
+  const matchedAutomations = automations
     .filter((item) => matchesAutomation(item, context))
-    .sort((left, right) => left.priority - right.priority || left.id.localeCompare(right.id))[0];
+    .sort((left, right) => left.priority - right.priority || left.id.localeCompare(right.id));
+  const pendingFollowAutomationId = isFollowConfirmation
+    ? String(contact.customFields.pending_follow_automation_id || '')
+    : '';
+  // A follow payload belongs to the exact automation that opened the gate.
+  // Without this preference, two active scenarios with similar triggers can
+  // resume the wrong graph and leave the user without the intended answer.
+  const automation = (pendingFollowAutomationId
+    ? matchedAutomations.find((item) => item.id === pendingFollowAutomationId)
+    : undefined) || matchedAutomations[0];
   if (!automation) {
     const aiReply = await askGemini(env, workspace.id, text, isComment ? 'comment' : 'dm');
-    if (aiReply && conversation.mode === 'automation') await deliverAiReply(env, aiReply.text, String(fromUser.id), conversation, eventId);
+    if (aiReply && conversation.mode === 'automation') {
+      const delivered = await deliverAiReply(env, aiReply.text, String(fromUser.id), conversation, eventId, undefined, String(externalMessageId));
+      return { blocked: false, deliveryFailed: !delivered, deliveryError: delivered ? undefined : 'AI_REPLY_DELIVERY_FAILED' };
+    }
     return { blocked: false };
   }
   automation.runCount += 1;
   automation.lastTriggeredAt = now;
 
   let privateReplySentForComment = false;
+  let publicReplySentForComment = false;
+  let deliveryFailed = false;
+  let deliveryError: string | undefined;
   const recordOutbound = async (messageType: Message['messageType'], content: Message['content'], policyBasis: string, nodeId?: string) => {
     if (isComment && messageType === 'private_reply' && privateReplySentForComment) {
       console.log(JSON.stringify({ event: 'instagram_private_reply_deduped', eventId, commentId: String(externalMessageId) }));
       return;
     }
+    if (isComment && messageType === 'public_comment_reply' && publicReplySentForComment) {
+      console.log(JSON.stringify({ event: 'instagram_public_reply_deduped', eventId, commentId: String(externalMessageId) }));
+      return;
+    }
     const deliveryKey = isFollowConfirmation
-      ? `follow:${contact!.id}:${automation.id}:${nodeId || messageType}:${String(replyPayload || 'FOLLOW_CLAIMED')}`
+      ? `follow:${String(externalMessageId)}:${automation.id}:${nodeId || messageType}:${String(replyPayload || 'FOLLOW_CLAIMED')}`
       : `event:${String(externalMessageId)}:${nodeId || messageType}:${messageType}`;
-    const storedContent = content.deliveryKey ? content : { ...content, deliveryKey };
+    const originalContent = content.deliveryKey ? content : { ...content, deliveryKey };
+    const isPublicCommentReply = messageType === 'public_comment_reply' && isComment && Boolean(externalMessageId);
+    const isPrivateCommentReply = messageType === 'private_reply' && isComment && Boolean(externalMessageId);
+    const usesCommentPrivateReply = isPrivateCommentReply && !hasDirectMessagingWindow;
+    const containsFollowClaim = [...(originalContent.buttons || []), ...(originalContent.quickReplies || [])]
+      .some((item) => String(item.payload || '').toUpperCase().startsWith('FOLLOW_CLAIMED'));
+    // Use Instagram quick replies for the follow gate once a DM window is
+    // open. They arrive under message.quick_reply, which is more reliable
+    // than a generic-template postback across Instagram API versions.
+    const storedContent = containsFollowClaim && !usesCommentPrivateReply
+      ? {
+          ...originalContent,
+          buttons: (originalContent.buttons || []).filter((button) => !String(button.payload || '').toUpperCase().startsWith('FOLLOW_CLAIMED')),
+          quickReplies: [
+            ...(originalContent.quickReplies || []),
+            ...(originalContent.buttons || [])
+              .filter((button) => String(button.payload || '').toUpperCase().startsWith('FOLLOW_CLAIMED'))
+              .map((button) => ({ title: button.title, payload: String(button.payload) })),
+          ],
+        }
+      : originalContent;
+    const privateCommentText = containsFollowClaim
+      ? `${storedContent.text || ''}\n\n\u067e\u0633 \u0627\u0632 \u0641\u0627\u0644\u0648\u060c \u062f\u0631 \u067e\u0627\u0633\u062e \u0647\u0645\u06cc\u0646 \u067e\u06cc\u0627\u0645 \u0639\u0628\u0627\u0631\u062a \u00ab\u0641\u0627\u0644\u0648 \u062f\u0627\u0631\u0645\u00bb \u0631\u0627 \u0627\u0631\u0633\u0627\u0644 \u06a9\u0646\u06cc\u062f.`.trim()
+      : storedContent.text;
+    const deliveredContent = usesCommentPrivateReply
+      ? { text: privateCommentText, deliveryKey }
+      : storedContent;
     const alreadyDelivered = messages.some((message) =>
       message.direction === 'outbound'
       && message.status !== 'failed'
@@ -1299,7 +1595,16 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
     );
     if (alreadyDelivered) {
       if (isComment && messageType === 'private_reply') privateReplySentForComment = true;
+      if (isComment && messageType === 'public_comment_reply') publicReplySentForComment = true;
       console.log(JSON.stringify({ event: 'instagram_outbound_deduped', eventId, deliveryKey, messageType }));
+      return;
+    }
+
+    const claimedElsewhere = await claimOutboundDelivery(env, workspace.id, deliveryKey, eventId);
+    if (claimedElsewhere) {
+      if (isComment && messageType === 'private_reply') privateReplySentForComment = true;
+      if (isComment && messageType === 'public_comment_reply') publicReplySentForComment = true;
+      console.log(JSON.stringify({ event: 'instagram_outbound_d1_deduped', eventId, deliveryKey, messageType }));
       return;
     }
 
@@ -1309,13 +1614,14 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
       try {
         const accessToken = await getInstagramAccessToken(env);
         if (!accessToken) throw new Error('INSTAGRAM_ACCESS_TOKEN is not configured');
-        const isPublicCommentReply = messageType === 'public_comment_reply' && isComment && externalMessageId;
-        const isPrivateCommentReply = messageType === 'private_reply' && isComment && externalMessageId;
         if (isPublicCommentReply) {
-          const url = `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/${encodeURIComponent(String(externalMessageId))}/replies?access_token=${encodeURIComponent(accessToken)}`;
-          const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: storedContent.text || '' }) });
-          const result: any = await response.json().catch(() => ({}));
-          if (!response.ok) throw new Error(result?.error?.message || `Meta API returned HTTP ${response.status}`);
+          const result = await replyToInstagramComment({
+            accessToken,
+            graphHost: instagramAccount.graphHost,
+            graphVersion: instagramAccount.graphVersion,
+            commentId: String(externalMessageId),
+            text: storedContent.text || '',
+          });
           externalId = result.id;
         } else {
           const result = await sendInstagramMessage({
@@ -1324,15 +1630,19 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
             graphVersion: instagramAccount.graphVersion,
             instagramUserId: instagramAccount.metaIgUserId,
             recipientId: String(fromUser.id),
-            commentId: isPrivateCommentReply ? String(externalMessageId) : undefined,
-            content: storedContent,
+            commentId: usesCommentPrivateReply ? String(externalMessageId) : undefined,
+            content: deliveredContent,
           });
           externalId = result.message_id;
         }
         status = 'sent';
+        await completeOutboundDelivery(env, workspace.id, deliveryKey, eventId);
       } catch (error) {
         status = 'failed';
+        await releaseOutboundDelivery(env, workspace.id, deliveryKey, eventId);
         const errorReason = error instanceof Error ? error.message : String(error);
+        deliveryFailed = true;
+        deliveryError = errorReason;
         dlqItems.unshift({
           id: `dlq_${crypto.randomUUID()}`,
           jobId: `job_${crypto.randomUUID()}`,
@@ -1348,7 +1658,9 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
         console.log(JSON.stringify({ event: 'instagram_outbound_failed', eventId, deliveryKey, messageType, error: errorReason }));
       }
     }
+    if (status === 'queued') await completeOutboundDelivery(env, workspace.id, deliveryKey, eventId);
     if (isComment && messageType === 'private_reply') privateReplySentForComment = true;
+    if (isComment && messageType === 'public_comment_reply') publicReplySentForComment = true;
     const sentAt = new Date().toISOString();
     messages.push({
       id: `msg_out_${crypto.randomUUID()}`,
@@ -1359,7 +1671,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
       direction: 'outbound',
       messageType,
       textBody: content.text,
-      content: storedContent,
+      content: deliveredContent,
       status,
       policyBasis,
       correlationId: `corr_${eventId}`,
@@ -1369,6 +1681,13 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
     conversation!.lastOutboundAt = sentAt;
     conversation!.lastMessageAt = sentAt;
     conversation!.lastMessagePreview = content.text || messageType;
+    if (nodeId && status === 'sent') {
+      const executedNode = runtimeVersion(automation, context).nodes.find((node) => node.id === nodeId);
+      if (executedNode?.config.followGateMode === 'claim' && executedNode.config.followGatePayload) {
+        contact!.customFields.pending_follow_payload = executedNode.config.followGatePayload;
+        contact!.customFields.pending_follow_automation_id = automation.id;
+      }
+    }
     if (status === 'sent') {
       if (messageType === 'public_comment_reply') analytics.publicRepliesSent += 1;
       else analytics.privateRepliesSent += 1;
@@ -1404,14 +1723,20 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
       break;
     }
   }
-  return { blocked: false };
+  if (isFollowConfirmation && followStatus === 'verified') {
+    delete contact.customFields.pending_follow_payload;
+    delete contact.customFields.pending_follow_automation_id;
+  }
+  return { blocked: false, deliveryFailed, deliveryError };
 }
 
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+async function handleRequest(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const { pathname, searchParams } = url;
     const method = request.method;
+    if (pathname.startsWith('/api/v1/') && Number(request.headers.get('content-length') || 0) > 524_288) {
+      return jsonResponse({ error: 'Request payload is too large' }, 413, env.APP_ORIGIN);
+    }
     let bootstrapWorkspaceId = INITIAL_WORKSPACE.id;
     if (pathname === '/api/v1/instagram/oauth/callback' && env.DB) {
       const oauthState = searchParams.get('state');
@@ -1423,7 +1748,10 @@ export default {
     let authContext: AuthContext | null = null;
     try {
       authContext = await getAuthContext(request, env);
-      await loadWorkerState(env, authContext?.workspaceId || bootstrapWorkspaceId);
+      // Always start a dynamic request from the latest committed D1 version.
+      // A local request queue below prevents isolate-local state interleaving;
+      // optimistic writes prevent silent cross-isolate overwrites.
+      await loadWorkerState(env, authContext?.workspaceId || bootstrapWorkspaceId, true);
     } catch (error) {
       console.log(JSON.stringify({ event: 'state_bootstrap_failed', error: error instanceof Error ? error.message : String(error) }));
       return jsonResponse({ error: 'State bootstrap failed' }, 500);
@@ -1437,9 +1765,17 @@ export default {
           'Access-Control-Allow-Origin': env.APP_ORIGIN || 'https://usdhunter.ir',
           'Vary': 'Origin',
           'Access-Control-Allow-Methods': 'GET, POST, PATCH, PUT, DELETE, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Hub-Signature-256',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization, Idempotency-Key, X-Hub-Signature-256',
         },
       });
+    }
+
+    if (pathname.startsWith('/api/v1/') && !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+      const requestOrigin = request.headers.get('Origin');
+      const expectedOrigin = new URL(env.APP_ORIGIN || request.url).origin;
+      if (requestOrigin && requestOrigin !== expectedOrigin) {
+        return jsonResponse({ error: 'Request origin is not allowed' }, 403, expectedOrigin);
+      }
     }
 
     // ==========================================
@@ -1465,118 +1801,127 @@ export default {
 
     // Webhook Event Ingest
     if (pathname === '/webhooks/meta' && method === 'POST') {
+      const contentLength = Number(request.headers.get('content-length') || 0);
+      if (contentLength > 1_048_576) return jsonResponse({ error: 'Webhook payload is too large' }, 413);
       const rawBody = await request.text();
+      if (new TextEncoder().encode(rawBody).byteLength > 1_048_576) {
+        return jsonResponse({ error: 'Webhook payload is too large' }, 413);
+      }
       const signature = request.headers.get('x-hub-signature-256');
-      const appSecret = (env.META_APP_SECRET || 'instaflow_app_secret_demo').trim();
+      const appSecret = env.META_APP_SECRET?.trim();
+      if (!appSecret) return jsonResponse({ error: 'Meta webhook secret is not configured' }, 503);
 
       let signatureValid = false;
       if (signature) {
         const expectedSig = await calculateHmacSha256(rawBody, appSecret);
-        signatureValid = signature === expectedSig;
+        signatureValid = constantTimeEqual(signature, expectedSig);
       }
-
-      let payload: any = {};
-      try {
-        payload = JSON.parse(rawBody);
-      } catch {
-        // invalid json
-      }
-
-      // Meta's webhook entry id is the Instagram professional account id.
-      // Resolve it to the owning workspace before processing a multi-tenant event.
-      if (signatureValid && env.DB && payload?.entry?.[0]?.id) {
-        const routedConnection = await env.DB.prepare('SELECT workspace_id AS workspaceId FROM instagram_connections WHERE meta_ig_user_id = ?1 AND status = \'connected\' LIMIT 1').bind(String(payload.entry[0].id)).first<{ workspaceId: string }>();
-        if (routedConnection?.workspaceId && routedConnection.workspaceId !== workspace.id) {
-          await loadWorkerState(env, routedConnection.workspaceId);
-        }
-      }
-
-      const webhookIdentity = getWebhookIdentity(payload);
-      const hash = await sha256Hex(`meta_${webhookIdentity.dedupeKey}`);
-      const fingerprint = hash.slice(0, 32);
-
-      // An invalid request must never be classified as a duplicate. Otherwise a
-      // repeated unsigned payload can hide an authentication failure in analytics.
-      const eventId = `whe_${Date.now()}_${crypto.randomUUID()}`;
-      const isDuplicate = signatureValid
-        ? await claimWebhookIdempotency(env, workspace.id, webhookIdentity.dedupeKey, eventId, fingerprint)
-        : false;
-
-      const eventType = webhookIdentity.eventType;
-      console.log(
-        JSON.stringify({
-          event: 'meta_webhook_received',
-          eventId,
-          eventType,
-          signaturePresent: Boolean(signature),
-          signatureValid,
-          isDuplicate,
-          entryCount: Array.isArray(payload?.entry) ? payload.entry.length : 0,
-        }),
-      );
-
-      const webhookEventRecord: WebhookEvent = {
-        id: eventId,
-        workspaceId: workspace.id,
-        instagramAccountId: instagramAccount.id,
-        eventType,
-        externalEventId: webhookIdentity.externalId || payload?.entry?.[0]?.id || `evt_${Date.now()}`,
-        fingerprint,
-        signatureValid,
-        payload,
-        status: !signatureValid ? 'failed' : isDuplicate ? 'deduped' : 'processed',
-        receivedAt: new Date().toISOString(),
-        processedAt: signatureValid && !isDuplicate ? new Date().toISOString() : undefined,
-        errorCode: !signatureValid
-          ? 'INVALID_SIGNATURE'
-          : isDuplicate
-          ? 'DUPLICATE_EVENT'
-          : undefined,
-      };
-
-      webhookEvents.unshift(webhookEventRecord);
 
       if (!signatureValid) {
-        await persistWorkerState(env);
-        console.log(JSON.stringify({ event: 'meta_webhook_rejected', eventId, errorCode: 'INVALID_SIGNATURE' }));
+        console.log(JSON.stringify({ event: 'meta_webhook_rejected', errorCode: 'INVALID_SIGNATURE' }));
         return jsonResponse({ error: 'Invalid webhook signature' }, 401);
       }
 
-      if (isDuplicate) {
-        console.log(JSON.stringify({ event: 'meta_webhook_deduped', eventId, fingerprint }));
-        return jsonResponse({ status: 'deduped', fingerprint });
-      }
-
-      processedFingerprints.add(fingerprint);
-      instagramAccount.lastWebhookAt = new Date().toISOString();
-
+      let payload: any;
       try {
-        const result = await processIncomingWebhookEvent(payload, eventId, env);
-        webhookEventRecord.status = result.blocked ? 'failed' : 'processed';
-        webhookEventRecord.errorCode = result.blocked ? 'META_POLICY_7DAY_EXPIRED' : undefined;
-        webhookEventRecord.processedAt = new Date().toISOString();
-      } catch (error) {
-        webhookEventRecord.status = 'failed';
-        webhookEventRecord.errorCode = error instanceof Error ? error.message.slice(0, 120) : 'PROCESSING_ERROR';
+        payload = JSON.parse(rawBody);
+      } catch {
+        return jsonResponse({ error: 'Invalid webhook JSON' }, 400);
       }
-      await persistWorkerState(env);
+      if (payload?.object !== 'instagram' || !Array.isArray(payload?.entry)) {
+        return jsonResponse({ error: 'Unsupported webhook payload' }, 400);
+      }
 
-      console.log(
-        JSON.stringify({
+      const eventResults: Array<{ eventId: string; fingerprint: string; status: WebhookEvent['status']; errorCode?: string }> = [];
+      for (const eventPayload of splitInstagramWebhookPayload(payload)) {
+        // Meta's entry id is the Instagram professional account id. Resolve
+        // every split event independently because one request may be batched.
+        if (env.DB && eventPayload?.entry?.[0]?.id) {
+          const routedConnection = await env.DB.prepare(
+            'SELECT workspace_id AS workspaceId FROM instagram_connections WHERE meta_ig_user_id = ?1 AND status = \'connected\' LIMIT 1',
+          ).bind(String(eventPayload.entry[0].id)).first<{ workspaceId: string }>();
+          if (routedConnection?.workspaceId && routedConnection.workspaceId !== workspace.id) {
+            await loadWorkerState(env, routedConnection.workspaceId, true);
+          }
+        }
+
+        const webhookIdentity = getWebhookIdentity(eventPayload);
+        const fingerprint = (await sha256Hex(`meta_${webhookIdentity.dedupeKey}`)).slice(0, 32);
+        const eventId = `whe_${Date.now()}_${crypto.randomUUID()}`;
+        const isDuplicate = await claimWebhookIdempotency(env, workspace.id, webhookIdentity.dedupeKey, eventId, fingerprint);
+        const webhookEventRecord: WebhookEvent = {
+          id: eventId,
+          workspaceId: workspace.id,
+          instagramAccountId: instagramAccount.id,
+          eventType: webhookIdentity.eventType,
+          externalEventId: webhookIdentity.externalId || eventPayload?.entry?.[0]?.id || `evt_${Date.now()}`,
+          fingerprint,
+          signatureValid: true,
+          payload: eventPayload,
+          status: isDuplicate ? 'deduped' : 'processed',
+          receivedAt: new Date().toISOString(),
+          processedAt: isDuplicate ? undefined : new Date().toISOString(),
+          errorCode: isDuplicate ? 'DUPLICATE_EVENT' : undefined,
+        };
+        webhookEvents.unshift(webhookEventRecord);
+
+        console.log(JSON.stringify({
+          event: 'meta_webhook_received',
+          eventId,
+          eventType: webhookIdentity.eventType,
+          signaturePresent: Boolean(signature),
+          signatureValid: true,
+          isDuplicate,
+        }));
+
+        if (!isDuplicate) {
+          processedFingerprints.add(fingerprint);
+          instagramAccount.lastWebhookAt = new Date().toISOString();
+          try {
+            const result = await processIncomingWebhookEvent(eventPayload, eventId, env);
+            webhookEventRecord.status = result.blocked || result.deliveryFailed ? 'failed' : 'processed';
+            webhookEventRecord.errorCode = result.blocked
+              ? 'META_POLICY_7DAY_EXPIRED'
+              : result.deliveryFailed
+                ? (result.deliveryError || 'META_DELIVERY_FAILED').slice(0, 120)
+                : undefined;
+            webhookEventRecord.processedAt = new Date().toISOString();
+          } catch (error) {
+            webhookEventRecord.status = 'failed';
+            webhookEventRecord.errorCode = error instanceof Error ? error.message.slice(0, 120) : 'PROCESSING_ERROR';
+          }
+          if (webhookEventRecord.status === 'failed' && webhookEventRecord.errorCode !== 'META_POLICY_7DAY_EXPIRED') {
+            await releaseWebhookIdempotency(env, workspace.id, webhookIdentity.dedupeKey, eventId);
+            processedFingerprints.delete(fingerprint);
+          }
+        }
+
+        try {
+          await persistWorkerState(env);
+        } catch (error) {
+          if (!isDuplicate) {
+            await releaseWebhookIdempotency(env, workspace.id, webhookIdentity.dedupeKey, eventId);
+            processedFingerprints.delete(fingerprint);
+          }
+          throw error;
+        }
+        eventResults.push({
+          eventId,
+          fingerprint,
+          status: webhookEventRecord.status,
+          errorCode: webhookEventRecord.errorCode,
+        });
+        console.log(JSON.stringify({
           event: 'meta_webhook_processed',
           eventId,
           eventType: webhookEventRecord.eventType,
           status: webhookEventRecord.status,
           errorCode: webhookEventRecord.errorCode,
-        }),
-      );
+        }));
+      }
 
-      return jsonResponse({
-        status: 'received',
-        eventId,
-        fingerprint,
-        signatureValid,
-      });
+      const retryRequired = eventResults.some((result) => result.status === 'failed' && result.errorCode !== 'META_POLICY_7DAY_EXPIRED');
+      return jsonResponse({ status: retryRequired ? 'retry' : 'received', signatureValid: true, events: eventResults }, retryRequired ? 503 : 200);
     }
 
     // ==========================================
@@ -1590,6 +1935,12 @@ export default {
         const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
         const displayName = typeof body.displayName === 'string' ? body.displayName.trim() : '';
         const password = typeof body.password === 'string' ? body.password : '';
+        const rateLimit = await consumeAuthRateLimit(env, 'register', `${request.headers.get('cf-connecting-ip') || 'unknown'}:${email}`, 5, 3600);
+        if (!rateLimit.allowed) {
+          const response = jsonResponse({ error: 'Too many registration attempts; try again later' }, 429, env.APP_ORIGIN);
+          response.headers.set('Retry-After', String(rateLimit.retryAfter));
+          return response;
+        }
         if (!/^\S+@\S+\.\S+$/.test(email)) return jsonResponse({ error: 'A valid email is required' }, 400);
         if (password.length < 8) return jsonResponse({ error: 'Password must be at least 8 characters' }, 400);
         if (displayName.length < 2) return jsonResponse({ error: 'Display name is required' }, 400);
@@ -1641,6 +1992,12 @@ export default {
       const body: any = await request.json().catch(() => ({}));
       const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
       const password = typeof body.password === 'string' ? body.password : '';
+      const rateLimit = await consumeAuthRateLimit(env, 'login', `${request.headers.get('cf-connecting-ip') || 'unknown'}:${email}`, 10, 900);
+      if (!rateLimit.allowed) {
+        const response = jsonResponse({ error: 'Too many login attempts; try again later' }, 429, env.APP_ORIGIN);
+        response.headers.set('Retry-After', String(rateLimit.retryAfter));
+        return response;
+      }
       const user = await env.DB.prepare('SELECT id, email, display_name AS displayName, password_hash AS passwordHash FROM users WHERE email = ?1 AND status = \'active\'').bind(email).first<{ id: string; email: string; displayName: string; passwordHash: string }>();
       if (!user || !(await verifyPassword(password, user.passwordHash))) return jsonResponse({ error: 'Email or password is incorrect' }, 401);
       const membership = await env.DB.prepare('SELECT workspace_id AS workspaceId, role FROM workspace_memberships WHERE user_id = ?1 AND status = \'active\' ORDER BY role = \'owner\' DESC LIMIT 1').bind(user.id).first<{ workspaceId: string; role: string }>();
@@ -1663,6 +2020,9 @@ export default {
     const publicApiPath = pathname === '/api/v1/health' || pathname.startsWith('/api/v1/auth/') || pathname === '/api/v1/instagram/oauth/callback';
     if (env.DB && pathname.startsWith('/api/v1/') && !publicApiPath && !authContext) {
       return jsonResponse({ error: 'Authentication required' }, 401, env.APP_ORIGIN);
+    }
+    if (authContext && !['GET', 'HEAD'].includes(method) && ['viewer', 'billing'].includes(authContext.role)) {
+      return jsonResponse({ error: 'Your workspace role is read-only' }, 403, env.APP_ORIGIN);
     }
 
     if (pathname === '/api/v1/instagram/oauth/start' && method === 'GET') {
@@ -1687,7 +2047,7 @@ export default {
       const stateRow = await env.DB.prepare('SELECT workspace_id AS workspaceId FROM instagram_oauth_states WHERE state_hash = ?1 AND expires_at > ?2').bind(await sha256Hex(state), new Date().toISOString()).first<{ workspaceId: string }>();
       if (!state || !stateRow) return htmlResponse('<h1>OAuth state is invalid or expired</h1>', 400);
       await env.DB.prepare('DELETE FROM instagram_oauth_states WHERE state_hash = ?1').bind(await sha256Hex(state)).run();
-      if (providerError || !code) return htmlResponse(`<h1>Instagram connection was cancelled</h1><p>${providerError || 'No authorization code was returned.'}</p>`, 400);
+      if (providerError || !code) return htmlResponse(`<h1>Instagram connection was cancelled</h1><p>${escapeHtml(providerError || 'No authorization code was returned.')}</p>`, 400);
       try {
         const redirectUri = instagramOAuthRedirectUri(env);
         const shortTokenResponse = await fetchWithTimeout('https://api.instagram.com/oauth/access_token', {
@@ -1703,7 +2063,9 @@ export default {
         const accessToken = longToken.access_token || shortToken.access_token;
         if (!longTokenResponse.ok || !accessToken) throw new Error(longToken?.error?.message || `Long-lived token exchange failed (${longTokenResponse.status})`);
         if (instagramAccount.graphHost === 'graph.instagram.com') instagramAccount.graphVersion = INSTAGRAM_GRAPH_VERSION;
-        const profileResponse = await fetchWithTimeout(`https://graph.instagram.com/${instagramAccount.graphVersion}/me?fields=id,username,name,profile_picture_url,account_type,user_id&access_token=${encodeURIComponent(accessToken)}`);
+        const profileResponse = await fetchWithTimeout(`https://graph.instagram.com/${instagramAccount.graphVersion}/me?fields=id,username,name,profile_picture_url,account_type,user_id`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
         const profile = await profileResponse.json<any>().catch(() => ({}));
         if (!profileResponse.ok || !profile.username) throw new Error(profile?.error?.message || `Instagram profile lookup failed (${profileResponse.status})`);
         const now = new Date().toISOString();
@@ -1876,20 +2238,20 @@ export default {
     if (pathname === '/api/v1/instagram/verify' && method === 'POST') {
       const accessToken = await getInstagramAccessToken(env);
       if (!accessToken) return jsonResponse({ error: 'INSTAGRAM_ACCESS_TOKEN is not configured' }, 503);
-      const verifyUrl = `https://${instagramAccount.graphHost}/${instagramAccount.graphVersion}/me?fields=id,username,name,profile_picture_url,account_type,user_id&access_token=${encodeURIComponent(accessToken)}`;
-      const response = await fetch(verifyUrl);
-      const profile: any = await response.json().catch(() => ({}));
-      if (!response.ok) {
+      let profile: any;
+      try {
+        profile = await verifyInstagramAccount({
+          accessToken,
+          graphHost: instagramAccount.graphHost,
+          graphVersion: instagramAccount.graphVersion,
+        });
+      } catch (error) {
         instagramAccount.status = 'reauth_required';
         instagramAccount.webhookStatus = 'failed';
         instagramAccount.lastTokenCheckAt = new Date().toISOString();
         await persistWorkerState(env);
-        const metaError = profile?.error || {};
         return jsonResponse({
-          error: metaError.message || `Instagram verification failed (${response.status})`,
-          code: metaError.code,
-          type: metaError.type,
-          fbtraceId: metaError.fbtrace_id,
+          error: error instanceof Error ? error.message : 'Instagram verification failed',
           reauthRequired: true,
           instagramAccount,
         }, 502);
@@ -1962,7 +2324,7 @@ export default {
           id: versionId,
           automationId: autoId,
           versionNo: 1,
-          checksum: Math.random().toString(36).substring(2, 12),
+          checksum: crypto.randomUUID().replace(/-/g, '').slice(0, 12),
           createdAt,
           validationResult: { valid: true, errors: [], warnings: [] },
           nodes: body.nodes || [
@@ -2021,7 +2383,7 @@ export default {
       }
 
       auto.currentVersion.versionNo += 1;
-      auto.currentVersion.checksum = Math.random().toString(36).substring(2, 14);
+      auto.currentVersion.checksum = crypto.randomUUID().replace(/-/g, '').slice(0, 14);
       auto.currentVersion.publishedAt = new Date().toISOString();
       auto.currentVersion.validationResult = {
         valid: true,
@@ -2139,6 +2501,20 @@ export default {
       if (!text) return jsonResponse({ error: 'Message text is required' }, 400);
       if (conv.mode !== 'human') return jsonResponse({ error: 'Conversation is not in human mode' }, 409);
       if (Date.parse(conv.standardWindowOpenUntil) < Date.now()) return jsonResponse({ error: 'Instagram 24-hour messaging window has expired' }, 409);
+      const clientRequestId = String(request.headers.get('Idempotency-Key') || body.clientRequestId || crypto.randomUUID()).slice(0, 128);
+      const deliveryKey = `human:${conv.id}:${clientRequestId}`;
+      const duplicateMessage = messages.find((message) =>
+        message.workspaceId === workspace.id
+        && message.conversationId === conv.id
+        && message.direction === 'outbound'
+        && message.status !== 'failed'
+        && message.content.deliveryKey === deliveryKey,
+      );
+      if (duplicateMessage) return jsonResponse({ message: duplicateMessage, conversation: conv, deduped: true }, 200, env.APP_ORIGIN);
+      const eventId = `human_${clientRequestId}`;
+      if (await claimOutboundDelivery(env, workspace.id, deliveryKey, eventId)) {
+        return jsonResponse({ error: 'This message is already being sent' }, 409, env.APP_ORIGIN);
+      }
       const createdAt = new Date().toISOString();
       const newMsg: Message = {
         id: `msg_out_${crypto.randomUUID()}`,
@@ -2149,12 +2525,51 @@ export default {
         direction: 'outbound',
         messageType: 'text',
         textBody: text,
-        content: { text },
+        content: { text, deliveryKey },
         status: 'queued',
         policyBasis: 'human_agent_reply',
         correlationId: `corr_human_${crypto.randomUUID()}`,
         createdAt,
       };
+
+      if (env.META_LIVE_MODE === 'true') {
+        try {
+          const accessToken = await getInstagramAccessToken(env);
+          const recipientId = conv.contact?.igScopedUserId || contacts.find((contact) => contact.id === conv.contactId)?.igScopedUserId;
+          if (!accessToken) throw new Error('INSTAGRAM_ACCESS_TOKEN is not configured');
+          if (!recipientId) throw new Error('Instagram recipient is not available');
+          const result = await sendInstagramMessage({
+            accessToken,
+            graphHost: instagramAccount.graphHost,
+            graphVersion: instagramAccount.graphVersion,
+            instagramUserId: instagramAccount.metaIgUserId,
+            recipientId,
+            content: { text },
+          });
+          newMsg.externalMessageId = result.message_id;
+          newMsg.status = 'sent';
+          newMsg.sentAt = createdAt;
+          await completeOutboundDelivery(env, workspace.id, deliveryKey, eventId);
+        } catch (error) {
+          newMsg.status = 'failed';
+          await releaseOutboundDelivery(env, workspace.id, deliveryKey, eventId);
+          const reason = error instanceof Error ? error.message : String(error);
+          dlqItems.unshift({
+            id: `dlq_${crypto.randomUUID()}`,
+            jobId: `job_${crypto.randomUUID()}`,
+            actionType: 'SEND_TEXT',
+            recipientId: conv.contact?.igScopedUserId || conv.contactId,
+            errorReason: reason,
+            errorClass: /token|permission|oauth|auth/i.test(reason) ? 'auth' : 'transient',
+            payloadSummary: text.slice(0, 160),
+            attemptCount: 1,
+            lastAttemptAt: createdAt,
+            canReplay: true,
+          });
+        }
+      } else {
+        await completeOutboundDelivery(env, workspace.id, deliveryKey, eventId);
+      }
 
       messages.push(newMsg);
       conv.lastOutboundAt = createdAt;
@@ -2162,7 +2577,8 @@ export default {
       conv.lastMessagePreview = text;
 
       await persistWorkerState(env);
-      return jsonResponse({ message: newMsg, conversation: conv }, 201);
+      if (newMsg.status === 'failed') return jsonResponse({ error: 'Instagram message delivery failed', message: newMsg, conversation: conv }, 502, env.APP_ORIGIN);
+      return jsonResponse({ message: newMsg, conversation: conv }, 201, env.APP_ORIGIN);
     }
 
     if (pathname === '/api/v1/contacts' && method === 'GET') {
@@ -2401,5 +2817,48 @@ export default {
     }
 
     return new Response('Not Found', { status: 404 });
+}
+
+let stateRequestQueue: Promise<void> = Promise.resolve();
+
+function enqueueStateRequest<T>(task: () => Promise<T>): Promise<T> {
+  const run = stateRequestQueue.then(task, task);
+  stateRequestQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+export default {
+  fetch(request: Request, env: Env): Promise<Response> {
+    const pathname = new URL(request.url).pathname;
+    const usesWorkspaceState = pathname.startsWith('/api/v1/') || pathname === '/webhooks/meta';
+    const execute = () => handleRequest(request, env);
+    if (!usesWorkspaceState) return execute();
+    return enqueueStateRequest(execute).catch((error) => {
+      if (error instanceof StateConflictError) {
+        const status = pathname === '/webhooks/meta' ? 503 : 409;
+        return jsonResponse({ error: 'Workspace changed concurrently; retry the request' }, status, env.APP_ORIGIN);
+      }
+      console.log(JSON.stringify({ event: 'request_failed', pathname, error: error instanceof Error ? error.message : String(error) }));
+      return jsonResponse({ error: 'Internal request failure' }, 500, env.APP_ORIGIN);
+    });
+  },
+  scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): void {
+    if (!env.DB) return;
+    const now = Date.now();
+    const webhookCutoff = new Date(now - 14 * 24 * 60 * 60 * 1000).toISOString();
+    const deliveryCutoff = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const expiredSessionCutoff = new Date(now).toISOString();
+    ctx.waitUntil(env.DB.batch([
+      env.DB.prepare('DELETE FROM webhook_idempotency WHERE created_at < ?1').bind(webhookCutoff),
+      env.DB.prepare("DELETE FROM outbound_deliveries WHERE status = 'sent' AND updated_at < ?1").bind(deliveryCutoff),
+      env.DB.prepare('DELETE FROM auth_rate_limits WHERE expires_at < ?1').bind(expiredSessionCutoff),
+      env.DB.prepare('DELETE FROM sessions WHERE expires_at < ?1').bind(expiredSessionCutoff),
+      env.DB.prepare('DELETE FROM instagram_oauth_states WHERE expires_at < ?1').bind(expiredSessionCutoff),
+    ]).then(() => undefined).catch((error) => {
+      console.log(JSON.stringify({
+        event: 'scheduled_cleanup_failed',
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }));
   },
 };

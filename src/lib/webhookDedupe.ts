@@ -15,12 +15,13 @@ export function getWebhookIdentity(payload: any): WebhookIdentity {
   const messaging = entry?.messaging?.[0];
   const value = change?.value || messaging || {};
   const message = value?.message || value?.messages?.[0] || {};
-  const eventType = String(change?.field || (messaging ? 'messages' : 'unknown'));
+  const postback = value?.postback || message?.postback || {};
+  const eventType = String(change?.field || (postback?.payload ? 'messaging_postbacks' : messaging ? 'messages' : 'unknown'));
   const accountId = String(entry?.id || value?.recipient?.id || 'instagram');
   const externalId = String(
     eventType === 'comments'
       ? value?.id || ''
-      : message?.mid || value?.mid || value?.id || '',
+      : message?.mid || postback?.mid || value?.mid || value?.id || '',
   );
 
   return {

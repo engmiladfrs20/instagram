@@ -238,10 +238,11 @@ export default function App() {
   // Handler: Send Human Agent Reply Message
   const handleSendMessage = async (conversationId: string, text: string) => {
     try {
+      const clientRequestId = crypto.randomUUID();
       const data = await requestJson(`/api/v1/conversations/${conversationId}/messages`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': clientRequestId },
+        body: JSON.stringify({ text, clientRequestId }),
       });
       if (data.message) setMessages((prev) => [...prev, data.message]);
       if (data.conversation) setConversations((prev) => prev.map((conversation) =>

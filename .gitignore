@@ -8,4 +8,5 @@ coverage/
 !.env.example
 .data/
 .wrangler/
+.wrangler-dry-run*/
 .codex/

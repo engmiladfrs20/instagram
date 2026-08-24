@@ -37,11 +37,13 @@ import {
   clone,
   executableNodes,
   IncomingContext,
+  isFollowClaimText,
   matchesAutomation,
-  normalizeText,
   runtimeVersion,
 } from './src/lib/automationEngine';
-import { listInstagramMedia, replyToInstagramComment, sendInstagramMessage, sendInstagramText, verifyInstagramAccount } from './src/lib/metaClient';
+import { getInstagramUserProfile, listInstagramMedia, replyToInstagramComment, sendInstagramMessage, sendInstagramText, verifyInstagramAccount } from './src/lib/metaClient';
+import { isOwnInstagramComment, splitInstagramWebhookPayload } from './src/lib/instagramWebhook';
+import { getWebhookIdentity } from './src/lib/webhookDedupe';
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -49,6 +51,7 @@ const PORT = Number(process.env.PORT || 3000);
 // Raw body parser for HMAC verification on webhooks
 app.use(
   express.json({
+    limit: '1mb',
     verify: (req: any, _res, buf) => {
       req.rawBody = buf;
     },
@@ -233,7 +236,8 @@ app.get('/webhooks/meta', (req: Request, res: Response) => {
 app.post('/webhooks/meta', async (req: Request, res: Response) => {
   const signature = req.headers['x-hub-signature-256'] as string;
   const rawBody = (req as any).rawBody || Buffer.from(JSON.stringify(req.body));
-  const appSecret = (process.env.META_APP_SECRET || 'instaflow_app_secret_demo').trim();
+  const appSecret = process.env.META_APP_SECRET?.trim();
+  if (!appSecret) return res.status(503).json({ error: 'Meta webhook secret is not configured' });
 
   const expectedSig = calculateSignature(rawBody, appSecret);
   const signatureValid = Boolean(signature) && signature!.length === expectedSig.length && crypto.timingSafeEqual(
@@ -241,67 +245,56 @@ app.post('/webhooks/meta', async (req: Request, res: Response) => {
     Buffer.from(expectedSig),
   );
 
-  const payload = req.body;
-  const canonicalString = JSON.stringify(payload);
-  const externalEventId = payload?.entry?.[0]?.changes?.[0]?.value?.id || payload?.entry?.[0]?.id || `evt_${Date.now()}`;
-  const fingerprint = crypto
-    .createHash('sha256')
-    .update(`meta_${externalEventId}_${payload?.entry?.[0]?.changes?.[0]?.field || 'unknown'}_${canonicalString}`)
-    .digest('hex')
-    .slice(0, 32);
-
-  const eventId = `whe_${crypto.randomUUID()}`;
-
-  const webhookEventRecord: WebhookEvent = {
-    id: eventId,
-    workspaceId: workspace.id,
-    instagramAccountId: instagramAccount.id,
-    eventType: payload?.entry?.[0]?.changes?.[0]?.field || 'messages',
-    externalEventId,
-    fingerprint,
-    signatureValid,
-    payload,
-    status: signatureValid ? 'received' : 'failed',
-    receivedAt: new Date().toISOString(),
-    errorCode: signatureValid ? undefined : 'INVALID_SIGNATURE',
-  };
-
-  webhookEvents.unshift(webhookEventRecord);
-
   if (!signatureValid) {
-    persistState();
     return res.status(401).json({ error: 'Invalid webhook signature' });
   }
-
-  const isDuplicate = processedFingerprints.has(fingerprint);
-
-  if (isDuplicate) {
-    webhookEventRecord.status = 'deduped';
-    webhookEventRecord.errorCode = 'DUPLICATE_EVENT';
-    persistState();
-    console.log(`[Webhook Ingress] Deduplicated event fingerprint: ${fingerprint}`);
-    return res.status(200).json({ status: 'deduped', fingerprint });
+  const payload = req.body;
+  if (payload?.object !== 'instagram' || !Array.isArray(payload?.entry)) {
+    return res.status(400).json({ error: 'Unsupported webhook payload' });
   }
 
-  processedFingerprints.add(fingerprint);
-  instagramAccount.lastWebhookAt = new Date().toISOString();
+  const results: Array<{ eventId: string; status: WebhookEvent['status']; fingerprint: string; errorCode?: string }> = [];
+  for (const eventPayload of splitInstagramWebhookPayload(payload)) {
+    const identity = getWebhookIdentity(eventPayload);
+    const fingerprint = crypto.createHash('sha256').update(`meta_${identity.dedupeKey}`).digest('hex').slice(0, 32);
+    const eventId = `whe_${crypto.randomUUID()}`;
+    const isDuplicate = processedFingerprints.has(fingerprint);
+    const webhookEventRecord: WebhookEvent = {
+      id: eventId,
+      workspaceId: workspace.id,
+      instagramAccountId: instagramAccount.id,
+      eventType: identity.eventType,
+      externalEventId: identity.externalId || eventPayload?.entry?.[0]?.id || `evt_${Date.now()}`,
+      fingerprint,
+      signatureValid: true,
+      payload: eventPayload,
+      status: isDuplicate ? 'deduped' : 'received',
+      receivedAt: new Date().toISOString(),
+      errorCode: isDuplicate ? 'DUPLICATE_EVENT' : undefined,
+    };
+    webhookEvents.unshift(webhookEventRecord);
 
-  try {
-    const result = await processIncomingWebhookEvent(payload, eventId);
-    webhookEventRecord.status = result.blocked ? 'failed' : 'processed';
-    webhookEventRecord.processedAt = new Date().toISOString();
-    webhookEventRecord.errorCode = result.blocked ? 'META_POLICY_7DAY_EXPIRED' : undefined;
-  } catch (error) {
-    webhookEventRecord.status = 'failed';
-    webhookEventRecord.errorCode = error instanceof Error ? error.message.slice(0, 120) : 'PROCESSING_ERROR';
+    if (!isDuplicate) {
+      processedFingerprints.add(fingerprint);
+      instagramAccount.lastWebhookAt = new Date().toISOString();
+      try {
+        const result = await processIncomingWebhookEvent(eventPayload, eventId);
+        webhookEventRecord.status = result.blocked ? 'failed' : 'processed';
+        webhookEventRecord.processedAt = new Date().toISOString();
+        webhookEventRecord.errorCode = result.blocked ? 'META_POLICY_7DAY_EXPIRED' : undefined;
+      } catch (error) {
+        processedFingerprints.delete(fingerprint);
+        webhookEventRecord.status = 'failed';
+        webhookEventRecord.errorCode = error instanceof Error ? error.message.slice(0, 120) : 'PROCESSING_ERROR';
+      }
+    }
+    results.push({ eventId, status: webhookEventRecord.status, fingerprint, errorCode: webhookEventRecord.errorCode });
   }
   persistState();
-
-  return res.status(200).json({
+  return res.status(results.some((result) => result.status === 'failed' && result.errorCode !== 'META_POLICY_7DAY_EXPIRED') ? 503 : 200).json({
     status: 'received',
-    eventId,
-    fingerprint,
-    signatureValid,
+    signatureValid: true,
+    events: results,
   });
 });
 
@@ -493,19 +486,29 @@ function processIncomingWebhookEventLegacy(payload: any, eventId: string) {
 
 async function processIncomingWebhookEvent(payload: any, eventId: string): Promise<{ blocked: boolean }> {
   const change = payload?.entry?.[0]?.changes?.[0];
-  const field = change?.field || 'messages';
-  const value = change?.value;
+  const messaging = payload?.entry?.[0]?.messaging?.[0];
+  const field = change?.field || (messaging?.postback ? 'messaging_postbacks' : 'messages');
+  const value = change?.value || messaging;
   if (!value) return { blocked: false };
 
   const messageValue = value.message || value.messages?.[0];
+  const postbackValue = value.postback || messageValue?.postback;
   const isComment = field === 'comments';
-  const replyPayload = messageValue?.quick_reply?.payload || messageValue?.postback?.payload;
-  const text = String(isComment ? value.text || '' : messageValue?.text || value.text || '');
+  let replyPayload = messageValue?.quick_reply?.payload || postbackValue?.payload;
+  const text = String(isComment ? value.text || '' : messageValue?.text || value.text || postbackValue?.title || replyPayload || '');
   const fromUser = value.from || value.sender || messageValue?.from || {
     id: `igs_${crypto.randomUUID()}`,
     username: 'sample_user',
   };
-  const externalMessageId = value.id || messageValue?.mid || `msg_${crypto.randomUUID()}`;
+  const externalMessageId = value.id || messageValue?.mid || postbackValue?.mid || `msg_${crypto.randomUUID()}`;
+
+  if (isComment && isOwnInstagramComment({
+    senderId: fromUser?.id,
+    senderUsername: fromUser?.username,
+    connectedAccountId: instagramAccount.metaIgUserId,
+    connectedUsername: instagramAccount.username,
+    isSelf: value?.is_self,
+  })) return { blocked: false };
 
   if (isComment) {
     const createdTimeSec = Number(value.created_time || Math.floor(Date.now() / 1000));
@@ -554,6 +557,15 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
     if (fromUser.username) contact.username = String(fromUser.username);
   }
 
+  if (!isComment && !replyPayload && isFollowClaimText(text)) {
+    replyPayload = contact.customFields.pending_follow_payload
+      || automations.flatMap((automation) => [automation.publishedVersion, automation.currentVersion])
+        .filter(Boolean)
+        .flatMap((version) => version!.nodes)
+        .find((node) => node.config.followGateMode === 'claim' && node.config.followGatePayload)
+        ?.config.followGatePayload;
+  }
+
   let conversation = conversations.find((item) =>
     item.workspaceId === workspace.id &&
     item.instagramAccountId === instagramAccount.id &&
@@ -568,7 +580,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
       contact,
       status: 'open',
       mode: 'automation',
-      standardWindowOpenUntil: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+      standardWindowOpenUntil: isComment ? new Date(0).toISOString() : new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
       lastInboundAt: now,
       lastOutboundAt: new Date(0).toISOString(),
       lastMessageAt: now,
@@ -579,7 +591,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
     conversations.unshift(conversation);
   } else {
     conversation.lastInboundAt = now;
-    conversation.standardWindowOpenUntil = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+    if (!isComment) conversation.standardWindowOpenUntil = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
     conversation.lastMessageAt = now;
     conversation.lastMessagePreview = text;
     conversation.unreadCount += 1;
@@ -592,7 +604,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
     conversationId: conversation.id,
     externalMessageId: String(externalMessageId),
     direction: 'inbound',
-    messageType: isComment ? 'comment' : replyPayload ? 'quick_reply' : 'text',
+    messageType: isComment ? 'comment' : postbackValue ? 'postback' : replyPayload ? 'quick_reply' : 'text',
     textBody: text,
     content: isComment ? { commentText: text, mediaId: value.media?.id } : { text, quickReplies: messageValue?.quick_replies },
     status: 'received',
@@ -614,10 +626,76 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
   const isFollowConfirmation = !isComment && (
     String(replyPayload || '').toUpperCase() === 'FOLLOW_CLAIMED'
     || String(replyPayload || '').toUpperCase().startsWith('FOLLOW_CLAIMED:')
-    || ['فالو کردم', 'فالو دارم', 'followed', 'i follow'].includes(normalizeText(text))
+    || isFollowClaimText(text)
   );
-  if (isFollowConfirmation && fromUser.is_follower === false) return { blocked: false };
-  if (isFollowConfirmation && typeof fromUser.is_follower !== 'boolean' && automations.some((item) => item.status === 'active' && [item.currentVersion, item.publishedVersion].filter(Boolean).some((version) => version!.nodes.some((node) => node.config.followGateMode === 'claim')))) return { blocked: false };
+  let followStatus: 'verified' | 'not_verified' | 'unavailable' = 'unavailable';
+  if (isFollowConfirmation && process.env.INSTAGRAM_ACCESS_TOKEN) {
+    try {
+      const profile = await getInstagramUserProfile({
+        accessToken: process.env.INSTAGRAM_ACCESS_TOKEN,
+        graphHost: instagramAccount.graphHost,
+        graphVersion: instagramAccount.graphVersion,
+        userId: String(fromUser.id),
+        includeFollowStatus: true,
+      });
+      followStatus = profile.is_user_follow_business === true ? 'verified' : profile.is_user_follow_business === false ? 'not_verified' : 'unavailable';
+    } catch (error) {
+      console.warn('[Meta Follow Check] Failed', error);
+    }
+  }
+
+  const sendFollowFeedback = async (feedbackText: string) => {
+    let status: Message['status'] = 'queued';
+    let externalId: string | undefined;
+    if (process.env.META_LIVE_MODE === 'true' && process.env.INSTAGRAM_ACCESS_TOKEN) {
+      try {
+        const response = await sendInstagramMessage({
+          accessToken: process.env.INSTAGRAM_ACCESS_TOKEN,
+          graphHost: instagramAccount.graphHost,
+          graphVersion: instagramAccount.graphVersion,
+          instagramUserId: instagramAccount.metaIgUserId,
+          recipientId: String(fromUser.id),
+          content: { text: feedbackText, quickReplies: [{ title: 'فالو دارم', payload: String(replyPayload || 'FOLLOW_CLAIMED') }] },
+        });
+        status = 'sent';
+        externalId = response.message_id;
+      } catch (error) {
+        status = 'failed';
+        console.warn('[Meta Follow Feedback] Failed', error);
+      }
+    }
+    messages.push({
+      id: `msg_out_${crypto.randomUUID()}`,
+      workspaceId: workspace.id,
+      instagramAccountId: instagramAccount.id,
+      conversationId: conversation!.id,
+      externalMessageId: externalId,
+      direction: 'outbound',
+      messageType: 'quick_reply',
+      textBody: feedbackText,
+      content: { text: feedbackText, quickReplies: [{ title: 'فالو دارم', payload: String(replyPayload || 'FOLLOW_CLAIMED') }] },
+      status,
+      policyBasis: 'follow_gate',
+      correlationId: `corr_${eventId}`,
+      createdAt: now,
+      sentAt: status === 'sent' ? now : undefined,
+    });
+  };
+  if (isFollowConfirmation && followStatus === 'not_verified') {
+    await sendFollowFeedback('هنوز فالو بودن این حساب تأیید نشد. پیج را فالو کنید و دوباره روی «فالو دارم» بزنید.');
+    return { blocked: false };
+  }
+  if (isFollowConfirmation && followStatus === 'unavailable') {
+    await sendFollowFeedback('فعلاً Meta امکان بررسی وضعیت فالو را نداد. چند لحظه بعد دوباره روی «فالو دارم» بزنید.');
+    return { blocked: false };
+  }
+
+  const latestDirectInbound = messages
+    .filter((message) => message.conversationId === conversation!.id && message.direction === 'inbound' && message.messageType !== 'comment')
+    .sort((left, right) => Date.parse(right.receivedAt || right.createdAt) - Date.parse(left.receivedAt || left.createdAt))[0];
+  const latestDirectInboundAt = latestDirectInbound ? Date.parse(latestDirectInbound.receivedAt || latestDirectInbound.createdAt) : 0;
+  const hasDirectMessagingWindow = Date.parse(conversation.standardWindowOpenUntil) >= Date.now()
+    && latestDirectInboundAt + 24 * 3600 * 1000 >= Date.now();
 
   const context: IncomingContext = {
     trigger: isComment ? 'COMMENT_CREATED' : replyPayload ? 'QUICK_REPLY_SELECTED' : 'DM_RECEIVED',
@@ -625,24 +703,65 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
     payload,
     replyPayload,
     contactTags: contact.tags,
-    windowOpen: Date.parse(conversation.standardWindowOpenUntil) >= Date.now(),
+    windowOpen: hasDirectMessagingWindow,
     mediaId: isComment ? String(value?.media?.id || '') : undefined,
-    isFollower: typeof fromUser.is_follower === 'boolean' ? fromUser.is_follower : undefined,
+    isFollower: followStatus === 'verified' ? true : followStatus === 'not_verified' ? false : undefined,
   };
-  const matchedAutomation = automations
+  const matchedAutomations = automations
     .filter((auto) => matchesAutomation(auto, context))
-    .sort((left, right) => left.priority - right.priority || left.id.localeCompare(right.id))[0];
+    .sort((left, right) => left.priority - right.priority || left.id.localeCompare(right.id));
+  const pendingFollowAutomationId = isFollowConfirmation
+    ? String(contact.customFields.pending_follow_automation_id || '')
+    : '';
+  const matchedAutomation = (pendingFollowAutomationId
+    ? matchedAutomations.find((item) => item.id === pendingFollowAutomationId)
+    : undefined) || matchedAutomations[0];
   if (!matchedAutomation) return { blocked: false };
 
   matchedAutomation.runCount += 1;
   matchedAutomation.lastTriggeredAt = now;
-  const nodes = executableNodes(runtimeVersion(matchedAutomation), context);
+  const nodes = executableNodes(runtimeVersion(matchedAutomation, context), context);
+  let privateReplySentForComment = false;
+  let publicReplySentForComment = false;
 
   const recordOutbound = async (
     nodeType: Message['messageType'],
     body: Message['content'],
     policyBasis: string,
+    nodeId?: string,
   ) => {
+    if (isComment && nodeType === 'private_reply' && privateReplySentForComment) return undefined;
+    if (isComment && nodeType === 'public_comment_reply' && publicReplySentForComment) return undefined;
+    const deliveryKey = `event:${String(externalMessageId)}:${nodeId || nodeType}:${nodeType}`;
+    if (messages.some((message) => message.direction === 'outbound' && message.status !== 'failed' && message.content.deliveryKey === deliveryKey)) {
+      if (isComment && nodeType === 'private_reply') privateReplySentForComment = true;
+      if (isComment && nodeType === 'public_comment_reply') publicReplySentForComment = true;
+      return undefined;
+    }
+    const isPrivateCommentReply = nodeType === 'private_reply' && isComment && Boolean(externalMessageId);
+    const usesCommentPrivateReply = isPrivateCommentReply && !hasDirectMessagingWindow;
+    const containsFollowClaim = [...(body.buttons || []), ...(body.quickReplies || [])]
+      .some((item) => String(item.payload || '').toUpperCase().startsWith('FOLLOW_CLAIMED'));
+    const normalizedBody: Message['content'] = containsFollowClaim && !usesCommentPrivateReply
+      ? {
+          ...body,
+          buttons: (body.buttons || []).filter((button) => !String(button.payload || '').toUpperCase().startsWith('FOLLOW_CLAIMED')),
+          quickReplies: [
+            ...(body.quickReplies || []),
+            ...(body.buttons || [])
+              .filter((button) => String(button.payload || '').toUpperCase().startsWith('FOLLOW_CLAIMED'))
+              .map((button) => ({ title: button.title, payload: String(button.payload) })),
+          ],
+        }
+      : body;
+    const deliveredBody: Message['content'] = usesCommentPrivateReply
+      ? {
+          text: containsFollowClaim
+            ? `${normalizedBody.text || ''}\n\nپس از فالو، در پاسخ همین پیام عبارت «فالو دارم» را ارسال کنید.`.trim()
+            : normalizedBody.text,
+          deliveryKey,
+        }
+      : { ...normalizedBody, deliveryKey };
     const outNow = new Date().toISOString();
     let status: Message['status'] = 'queued';
     let externalId: string | undefined;
@@ -664,7 +783,8 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
               graphVersion: instagramAccount.graphVersion,
               instagramUserId: instagramAccount.metaIgUserId,
               recipientId: String(fromUser.id),
-              content: body,
+              commentId: usesCommentPrivateReply ? String(externalMessageId) : undefined,
+              content: deliveredBody,
         });
         status = 'sent';
         externalId = nodeType === 'public_comment_reply'
@@ -696,7 +816,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
       direction: 'outbound',
       messageType: nodeType,
       textBody: body.text,
-      content: body,
+      content: deliveredBody,
       status,
       policyBasis,
       correlationId: `corr_${eventId}`,
@@ -704,12 +824,19 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
       createdAt: outNow,
     };
     messages.push(outbound);
+    if (isComment && nodeType === 'private_reply') privateReplySentForComment = true;
+    if (isComment && nodeType === 'public_comment_reply') publicReplySentForComment = true;
     if (status === 'sent' || status === 'queued') {
       conversation!.lastOutboundAt = outNow;
       conversation!.lastMessageAt = outNow;
       conversation!.lastMessagePreview = body.text || nodeType;
     }
     if (status === 'sent') {
+      const executedNode = nodeId ? nodes.find((node) => node.id === nodeId) : undefined;
+      if (executedNode?.config.followGateMode === 'claim' && executedNode.config.followGatePayload) {
+        contact!.customFields.pending_follow_payload = executedNode.config.followGatePayload;
+        contact!.customFields.pending_follow_automation_id = matchedAutomation.id;
+      }
       if (nodeType === 'public_comment_reply') analytics.publicRepliesSent += 1;
       else analytics.privateRepliesSent += 1;
       const latest = analytics.dailyStats[analytics.dailyStats.length - 1];
@@ -731,7 +858,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
       case 'REPLY_PUBLIC_COMMENT':
         if (isComment && node.config.commentReplyDestination !== 'dm') {
           const publicText = chooseVariant(node.config.publicResponseVariants, node.config.publicReplyText);
-          if (publicText) await recordOutbound('public_comment_reply', { text: publicText }, 'public_comment_moderation');
+          if (publicText) await recordOutbound('public_comment_reply', { text: publicText }, 'public_comment_moderation', node.id);
         }
         break;
       case 'SEND_PRIVATE_REPLY':
@@ -744,15 +871,15 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
             mediaUrl: node.config.mediaUrl,
             mediaType: node.config.mediaType,
             isPrivateReply: true,
-          }, 'comment_to_dm_7day_rule');
+          }, 'comment_to_dm_7day_rule', node.id);
         }
         break;
       case 'SEND_TEXT':
-        if (node.config.text || node.config.mediaUrl || node.config.buttons?.length) await recordOutbound('text', { text: node.config.text, buttons: node.config.buttons, mediaUrl: node.config.mediaUrl, mediaType: node.config.mediaType }, 'automation');
+        if (node.config.text || node.config.mediaUrl || node.config.buttons?.length) await recordOutbound('text', { text: node.config.text, buttons: node.config.buttons, mediaUrl: node.config.mediaUrl, mediaType: node.config.mediaType }, 'automation', node.id);
         break;
       case 'SEND_QUICK_REPLIES':
         if (node.config.text || node.config.quickReplies?.length || node.config.mediaUrl || node.config.buttons?.length) {
-          await recordOutbound('quick_reply', { text: node.config.text, quickReplies: node.config.quickReplies, buttons: node.config.buttons, mediaUrl: node.config.mediaUrl, mediaType: node.config.mediaType }, 'automation');
+          await recordOutbound('quick_reply', { text: node.config.text, quickReplies: node.config.quickReplies, buttons: node.config.buttons, mediaUrl: node.config.mediaUrl, mediaType: node.config.mediaType }, 'automation', node.id);
         }
         break;
       case 'SEND_PRODUCT_CAROUSEL': {
@@ -785,6 +912,11 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
       default:
         break;
     }
+  }
+
+  if (isFollowConfirmation && followStatus === 'verified') {
+    delete contact.customFields.pending_follow_payload;
+    delete contact.customFields.pending_follow_automation_id;
   }
 
   return { blocked: false };

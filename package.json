@@ -9,6 +9,7 @@
     "start": "node dist/server.cjs",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
+    "test:flows": "tsx scripts/test-flows.ts",
     "deploy": "wrangler deploy",
     "worker:dev": "wrangler dev"
   },

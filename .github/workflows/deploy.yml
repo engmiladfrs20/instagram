@@ -21,7 +21,12 @@ jobs:
           node-version: 22
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
+
+      - name: Validate types and automation flows
+        run: |
+          npm run lint
+          npm run test:flows
 
       - name: Build Frontend (Vite React SPA)
         run: npm run build

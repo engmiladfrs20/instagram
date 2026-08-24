@@ -42,6 +42,18 @@ export function normalizeText(value: string | undefined): string {
   return text.normalize('NFKC').trim().toLocaleLowerCase('fa-IR');
 }
 
+export function isFollowClaimText(value: string | undefined): boolean {
+  const normalized = normalizeText(value);
+  return new Set([
+    '\u0641\u0627\u0644\u0648 \u062f\u0627\u0631\u0645',
+    '\u0641\u0627\u0644\u0648 \u06a9\u0631\u062f\u0645',
+    '\u0641\u0627\u0644\u0648\u062a\u0648\u0646 \u06a9\u0631\u062f\u0645',
+    'followed',
+    'i follow',
+    'i followed',
+  ]).has(normalized);
+}
+
 function triggerMatches(triggerType: TriggerType, trigger: IncomingTrigger): boolean {
   if (trigger === 'COMMENT_CREATED') {
     return triggerType === 'COMMENT_CREATED' || triggerType === 'COMMENT_KEYWORD' || triggerType === 'POST_OR_REEL_COMMENT';

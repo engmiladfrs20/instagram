@@ -39,7 +39,7 @@ import {
   verifyInstagramAccount,
 } from './lib/metaClient';
 import { getWebhookIdentity } from './lib/webhookDedupe';
-import { isOwnInstagramComment, splitInstagramWebhookPayload } from './lib/instagramWebhook';
+import { hasDisplayableInstagramContent, isOwnInstagramComment, normalizeInstagramInbound, splitInstagramWebhookPayload } from './lib/instagramWebhook';
 
 type Env = Cloudflare.Env & {
   META_APP_SECRET?: string;
@@ -847,11 +847,8 @@ function messageFromMeta(
   if (!externalMessageId) return null;
   const fromId = String(metaMessage?.from?.id || '');
   const isInbound = fromId !== String(instagramAccount.metaIgUserId);
-  const text = typeof metaMessage?.message === 'string' ? metaMessage.message : '';
-  const attachments = Array.isArray(metaMessage?.attachments?.data) ? metaMessage.attachments.data : [];
-  const firstAttachment = attachments[0];
-  const mediaUrl = firstAttachment?.image_data?.url || firstAttachment?.video_data?.url;
-  const mediaType = firstAttachment?.type === 'video' ? 'video' : firstAttachment?.type === 'image' ? 'image' : undefined;
+  const normalized = normalizeInstagramInbound(metaMessage);
+  if (!normalized.hasUserContent) return null;
   const createdAt = metaMessage?.created_time || now;
   return {
     id: `msg_meta_${externalMessageId}`,
@@ -861,8 +858,8 @@ function messageFromMeta(
     externalMessageId,
     direction: isInbound ? 'inbound' : 'outbound',
     messageType: 'text',
-    textBody: text || undefined,
-    content: { text: text || undefined, mediaUrl, mediaType },
+    textBody: normalized.content.text,
+    content: normalized.content,
     status: isInbound ? 'received' : 'sent',
     policyBasis: 'instagram_conversations_api',
     correlationId: `meta_sync_${externalMessageId}`,
@@ -930,12 +927,17 @@ async function refreshLiveConversations(env: Env): Promise<{ source: 'meta' | 's
         .map((item) => messageFromMeta(item, conversation!.id, contact, now))
         .filter((item): item is Message => Boolean(item));
       for (const syncedMessage of syncedMessages) {
-        if (!messages.some((item) => item.externalMessageId === syncedMessage.externalMessageId)) messages.push(syncedMessage);
+        const existing = messages.find((item) => item.externalMessageId === syncedMessage.externalMessageId);
+        if (!existing) {
+          messages.push(syncedMessage);
+        } else if (!hasDisplayableInstagramContent(existing.content) && hasDisplayableInstagramContent(syncedMessage.content)) {
+          Object.assign(existing, syncedMessage, { id: existing.id });
+        }
       }
       const latest = syncedMessages.slice().sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0];
       if (latest) {
         conversation.lastMessageAt = latest.createdAt;
-        conversation.lastMessagePreview = latest.textBody || (latest.content.mediaType ? `رسانهٔ ${latest.content.mediaType}` : 'پیام اینستاگرام');
+        conversation.lastMessagePreview = latest.textBody || latest.content.attachmentLabel || (latest.content.mediaType ? `رسانهٔ ${latest.content.mediaType}` : 'پیام اینستاگرام');
         if (latest.direction === 'inbound') {
           conversation.lastInboundAt = latest.createdAt;
           conversation.standardWindowOpenUntil = new Date(Date.parse(latest.createdAt) + 24 * 3600 * 1000).toISOString();
@@ -1292,11 +1294,19 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
   const messageValue = value.message || value.messages?.[0];
   const postbackValue = value.postback || messageValue?.postback;
   const isComment = field === 'comments';
-  let replyPayload = messageValue?.quick_reply?.payload || postbackValue?.payload;
-  const text = String(isComment ? value.text || '' : messageValue?.text || value.text || postbackValue?.title || replyPayload || '');
+  const normalizedInbound = normalizeInstagramInbound(value, { isComment });
+  let replyPayload = normalizedInbound.replyPayload || messageValue?.quick_reply?.payload || postbackValue?.payload;
+  const text = normalizedInbound.displayText;
   let fromUser: any = value.from || value.sender || messageValue?.from || { id: `igs_${crypto.randomUUID()}`, username: 'sample_user' };
   const externalMessageId = value.id || messageValue?.mid || postbackValue?.mid || `msg_${crypto.randomUUID()}`;
   const now = new Date().toISOString();
+
+  // Read receipts, deliveries, handover and similar messaging signals are not
+  // user messages. Keeping them out of the chat prevents empty inbox bubbles.
+  if (!isComment && !normalizedInbound.hasUserContent) {
+    console.log(JSON.stringify({ event: 'instagram_non_message_signal_ignored', eventId }));
+    return { blocked: false };
+  }
 
   // Meta also emits webhook events for comments written by the connected
   // account itself. Never feed those events back into an automation.
@@ -1424,7 +1434,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
     direction: 'inbound',
     messageType: isComment ? 'comment' : postbackValue ? 'postback' : replyPayload ? 'quick_reply' : 'text',
     textBody: text,
-    content: isComment ? { commentText: text, mediaId: value.media?.id } : { text },
+    content: isComment ? { commentText: text, mediaId: value.media?.id } : normalizedInbound.content,
     status: 'received',
     correlationId: `corr_${eventId}`,
     receivedAt: now,
@@ -1565,28 +1575,12 @@ async function processIncomingWebhookEvent(payload: any, eventId: string, env: E
     const isPublicCommentReply = messageType === 'public_comment_reply' && isComment && Boolean(externalMessageId);
     const isPrivateCommentReply = messageType === 'private_reply' && isComment && Boolean(externalMessageId);
     const usesCommentPrivateReply = isPrivateCommentReply && !hasDirectMessagingWindow;
-    const containsFollowClaim = [...(originalContent.buttons || []), ...(originalContent.quickReplies || [])]
-      .some((item) => String(item.payload || '').toUpperCase().startsWith('FOLLOW_CLAIMED'));
-    // Use Instagram quick replies for the follow gate once a DM window is
-    // open. They arrive under message.quick_reply, which is more reliable
-    // than a generic-template postback across Instagram API versions.
-    const storedContent = containsFollowClaim && !usesCommentPrivateReply
-      ? {
-          ...originalContent,
-          buttons: (originalContent.buttons || []).filter((button) => !String(button.payload || '').toUpperCase().startsWith('FOLLOW_CLAIMED')),
-          quickReplies: [
-            ...(originalContent.quickReplies || []),
-            ...(originalContent.buttons || [])
-              .filter((button) => String(button.payload || '').toUpperCase().startsWith('FOLLOW_CLAIMED'))
-              .map((button) => ({ title: button.title, payload: String(button.payload) })),
-          ],
-        }
-      : originalContent;
-    const privateCommentText = containsFollowClaim
-      ? `${storedContent.text || ''}\n\n\u067e\u0633 \u0627\u0632 \u0641\u0627\u0644\u0648\u060c \u062f\u0631 \u067e\u0627\u0633\u062e \u0647\u0645\u06cc\u0646 \u067e\u06cc\u0627\u0645 \u0639\u0628\u0627\u0631\u062a \u00ab\u0641\u0627\u0644\u0648 \u062f\u0627\u0631\u0645\u00bb \u0631\u0627 \u0627\u0631\u0633\u0627\u0644 \u06a9\u0646\u06cc\u062f.`.trim()
-      : storedContent.text;
+    // Keep button-template content intact so Instagram renders the prompt and
+    // the action in one message bubble.
+    const storedContent = originalContent;
+    const privateCommentText = storedContent.text;
     const deliveredContent = usesCommentPrivateReply
-      ? { text: privateCommentText, deliveryKey }
+      ? { ...storedContent, text: privateCommentText, deliveryKey }
       : storedContent;
     const alreadyDelivered = messages.some((message) =>
       message.direction === 'outbound'

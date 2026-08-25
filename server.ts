@@ -42,7 +42,7 @@ import {
   runtimeVersion,
 } from './src/lib/automationEngine';
 import { getInstagramUserProfile, listInstagramMedia, replyToInstagramComment, sendInstagramMessage, sendInstagramText, verifyInstagramAccount } from './src/lib/metaClient';
-import { isOwnInstagramComment, splitInstagramWebhookPayload } from './src/lib/instagramWebhook';
+import { isOwnInstagramComment, normalizeInstagramInbound, splitInstagramWebhookPayload } from './src/lib/instagramWebhook';
 import { getWebhookIdentity } from './src/lib/webhookDedupe';
 
 const app = express();
@@ -494,13 +494,16 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
   const messageValue = value.message || value.messages?.[0];
   const postbackValue = value.postback || messageValue?.postback;
   const isComment = field === 'comments';
-  let replyPayload = messageValue?.quick_reply?.payload || postbackValue?.payload;
-  const text = String(isComment ? value.text || '' : messageValue?.text || value.text || postbackValue?.title || replyPayload || '');
+  const normalizedInbound = normalizeInstagramInbound(value, { isComment });
+  let replyPayload = normalizedInbound.replyPayload || messageValue?.quick_reply?.payload || postbackValue?.payload;
+  const text = normalizedInbound.displayText;
   const fromUser = value.from || value.sender || messageValue?.from || {
     id: `igs_${crypto.randomUUID()}`,
     username: 'sample_user',
   };
   const externalMessageId = value.id || messageValue?.mid || postbackValue?.mid || `msg_${crypto.randomUUID()}`;
+
+  if (!isComment && !normalizedInbound.hasUserContent) return { blocked: false };
 
   if (isComment && isOwnInstagramComment({
     senderId: fromUser?.id,
@@ -606,7 +609,7 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
     direction: 'inbound',
     messageType: isComment ? 'comment' : postbackValue ? 'postback' : replyPayload ? 'quick_reply' : 'text',
     textBody: text,
-    content: isComment ? { commentText: text, mediaId: value.media?.id } : { text, quickReplies: messageValue?.quick_replies },
+    content: isComment ? { commentText: text, mediaId: value.media?.id } : normalizedInbound.content,
     status: 'received',
     correlationId: `corr_${eventId}`,
     receivedAt: now,
@@ -740,25 +743,11 @@ async function processIncomingWebhookEvent(payload: any, eventId: string): Promi
     }
     const isPrivateCommentReply = nodeType === 'private_reply' && isComment && Boolean(externalMessageId);
     const usesCommentPrivateReply = isPrivateCommentReply && !hasDirectMessagingWindow;
-    const containsFollowClaim = [...(body.buttons || []), ...(body.quickReplies || [])]
-      .some((item) => String(item.payload || '').toUpperCase().startsWith('FOLLOW_CLAIMED'));
-    const normalizedBody: Message['content'] = containsFollowClaim && !usesCommentPrivateReply
-      ? {
-          ...body,
-          buttons: (body.buttons || []).filter((button) => !String(button.payload || '').toUpperCase().startsWith('FOLLOW_CLAIMED')),
-          quickReplies: [
-            ...(body.quickReplies || []),
-            ...(body.buttons || [])
-              .filter((button) => String(button.payload || '').toUpperCase().startsWith('FOLLOW_CLAIMED'))
-              .map((button) => ({ title: button.title, payload: String(button.payload) })),
-          ],
-        }
-      : body;
+    const normalizedBody: Message['content'] = body;
     const deliveredBody: Message['content'] = usesCommentPrivateReply
       ? {
-          text: containsFollowClaim
-            ? `${normalizedBody.text || ''}\n\nپس از فالو، در پاسخ همین پیام عبارت «فالو دارم» را ارسال کنید.`.trim()
-            : normalizedBody.text,
+          ...normalizedBody,
+          text: normalizedBody.text,
           deliveryKey,
         }
       : { ...normalizedBody, deliveryKey };

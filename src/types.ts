@@ -100,6 +100,12 @@ export interface MessageContent {
   deliveryKey?: string;
   mediaUrl?: string;
   mediaType?: 'image' | 'video' | 'audio';
+  /** Human-readable description for inbound Instagram attachments and events. */
+  attachmentLabel?: string;
+  /** Raw Meta attachment/event type retained for diagnostics and future renderers. */
+  attachmentType?: string;
+  /** Link exposed by Meta for a shared post, file or other non-media attachment. */
+  attachmentUrl?: string;
   carouselItems?: Array<{ title: string; subtitle: string; imageUrl: string; price?: string; buttonText?: string; buttonUrl?: string }>;
   commentText?: string;
   mediaId?: string;

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Bot,
   Clock3,
+  ExternalLink,
   Mail,
   MessageSquare,
   Phone,
@@ -13,6 +14,7 @@ import {
   UserRound,
 } from 'lucide-react';
 import { Conversation, Contact, Message } from '../types';
+import { hasDisplayableInstagramContent } from '../lib/instagramWebhook';
 
 interface TeamInboxViewProps {
   conversations: Conversation[];
@@ -51,11 +53,26 @@ function ContactAvatar({ contact, size = 'md' }: { contact?: Contact; size?: 'sm
 function messageText(message: Message): string {
   if (message.textBody?.trim()) return message.textBody;
   if (message.content.text?.trim()) return message.content.text;
+  if (message.content.attachmentLabel?.trim()) return message.content.attachmentLabel;
   if (message.content.mediaType) return `رسانهٔ ${message.content.mediaType === 'image' ? 'تصویری' : message.content.mediaType === 'video' ? 'ویدئویی' : 'صوتی'}`;
   if (message.content.quickReplies?.length) return message.content.quickReplies.map((item) => item.title).join('، ');
   if (message.content.buttons?.length) return message.content.buttons.map((item) => item.title).join('، ');
   if (message.messageType === 'comment') return message.content.commentText || 'کامنت اینستاگرام';
-  return 'پیام اینستاگرام بدون متن';
+  return 'پیام اینستاگرام';
+}
+
+function safeExternalUrl(value?: string): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isDisplayableMessage(message: Message): boolean {
+  return message.messageType === 'comment' || hasDisplayableInstagramContent(message.content) || Boolean(message.textBody?.trim());
 }
 
 function messageKind(message: Message): string {
@@ -87,12 +104,13 @@ export const TeamInboxView: React.FC<TeamInboxViewProps> = ({
   const selectedConv = conversations.find((conversation) => conversation.id === selectedConvId) || conversations[0];
   const contact = selectedConv?.contact;
   const activeMessages = useMemo(
-    () => messages.filter((message) => message.conversationId === selectedConv?.id).sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt)),
+    () => messages.filter((message) => message.conversationId === selectedConv?.id && isDisplayableMessage(message)).sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt)),
     [messages, selectedConv?.id],
   );
   const latestMessages = useMemo(() => {
     const byConversation = new Map<string, Message>();
     for (const message of messages) {
+      if (!isDisplayableMessage(message)) continue;
       const current = byConversation.get(message.conversationId);
       if (!current || Date.parse(message.createdAt) > Date.parse(current.createdAt)) byConversation.set(message.conversationId, message);
     }
@@ -174,10 +192,16 @@ export const TeamInboxView: React.FC<TeamInboxViewProps> = ({
             <div className="inbox-message-list">
               {activeMessages.length ? activeMessages.map((message) => {
                 const inbound = message.direction === 'inbound';
+                const mediaUrl = safeExternalUrl(message.content.mediaUrl);
+                const attachmentUrl = safeExternalUrl(message.content.attachmentUrl);
                 return (
                   <div className={`inbox-message-row ${inbound ? 'is-inbound' : 'is-outbound'}`} key={message.id}>
                     <div className="inbox-message-bubble">
                       <p>{messageText(message)}</p>
+                      {mediaUrl && message.content.mediaType === 'image' ? <img className="inbox-message-media" src={mediaUrl} alt={message.content.attachmentLabel || 'تصویر اینستاگرام'} loading="lazy" referrerPolicy="no-referrer" /> : null}
+                      {mediaUrl && message.content.mediaType === 'video' ? <video className="inbox-message-media" src={mediaUrl} controls preload="metadata" /> : null}
+                      {mediaUrl && message.content.mediaType === 'audio' ? <audio className="inbox-message-audio" src={mediaUrl} controls preload="metadata" /> : null}
+                      {attachmentUrl && attachmentUrl !== mediaUrl ? <a className="inbox-message-link" href={attachmentUrl} target="_blank" rel="noreferrer"><ExternalLink size={13} /> مشاهدهٔ پیوست در اینستاگرام</a> : null}
                       {message.content.quickReplies?.length ? <div className="inbox-message-actions">{message.content.quickReplies.map((item) => <span key={item.payload}>{item.title}</span>)}</div> : null}
                       {message.content.buttons?.length ? <div className="inbox-message-actions">{message.content.buttons.map((item) => <span key={item.payload || item.title}>{item.title}</span>)}</div> : null}
                       <small>{messageKind(message)} · {new Date(message.createdAt).toLocaleTimeString('fa-IR')}</small>

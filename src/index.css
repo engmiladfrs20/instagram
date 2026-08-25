@@ -1219,3 +1219,128 @@ button, .btn { border-radius: 13px; font-family: inherit; }
   .visual-edge-row input, .visual-edge-row select { grid-column: 2; }
   .visual-edge-row > button { grid-column: 3; grid-row: 1 / span 2; }
 }
+
+/* Unified control geometry and inbox attachments. Keep actions balanced at
+   normal browser zoom without allowing labels and icons to split apart. */
+.btn,
+.dashboard-action-btn,
+.direct-primary-btn,
+.direct-secondary-btn,
+.direct-edit-btn,
+.direct-delete-btn,
+.direct-test-btn,
+.direct-inline-btn,
+.direct-add-question {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: .4rem;
+  padding: .55rem .85rem;
+  border-radius: 12px;
+  font-size: .84rem;
+  line-height: 1.25;
+  text-align: center;
+}
+
+.btn > svg,
+.dashboard-action-btn > svg,
+.direct-primary-btn > svg,
+.direct-secondary-btn > svg,
+.direct-edit-btn > svg,
+.direct-delete-btn > svg {
+  flex: 0 0 auto;
+}
+
+.workspace-page-actions {
+  align-items: flex-start;
+  flex: 0 0 auto;
+}
+
+.workspace-page-actions > .direct-secondary-btn,
+.direct-create-menu > .direct-primary-btn {
+  min-width: 132px;
+  height: 42px;
+  white-space: nowrap;
+}
+
+.direct-create-menu {
+  display: grid;
+  justify-items: stretch;
+}
+
+.direct-create-hint {
+  white-space: nowrap;
+}
+
+.direct-scenario-actions {
+  align-items: center;
+}
+
+.direct-scenario-actions .direct-edit-btn,
+.direct-scenario-actions .direct-delete-btn {
+  min-width: 78px;
+  white-space: nowrap;
+}
+
+.event-status-badge {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  justify-content: center;
+  gap: .28rem;
+  padding: .32rem .52rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.event-status-badge > span {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+.inbox-message-media {
+  display: block;
+  width: min(100%, 360px);
+  max-height: 360px;
+  margin-top: .65rem;
+  object-fit: contain;
+  border: 1px solid var(--bs-border-color);
+  border-radius: 12px;
+  background: var(--builder-surface-soft);
+}
+
+.inbox-message-audio {
+  display: block;
+  width: min(100%, 320px);
+  margin-top: .65rem;
+}
+
+.inbox-message-link {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  margin-top: .6rem;
+  color: var(--color-purple-600);
+  font-size: .78rem;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.inbox-message-link:hover {
+  color: var(--color-purple-500);
+  text-decoration: underline;
+}
+
+@media (max-width: 767.98px) {
+  .workspace-page-actions > .direct-secondary-btn,
+  .direct-create-menu,
+  .direct-create-menu > .direct-primary-btn {
+    width: 100%;
+  }
+
+  .direct-create-hint {
+    white-space: normal;
+  }
+}

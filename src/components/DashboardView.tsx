@@ -341,7 +341,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         <p className="small text-body-secondary text-truncate mb-0 mt-1">{eventText(event)}</p>
                       </div>
                       <div className="text-start flex-shrink-0">
-                        <span className={`badge text-bg-${status.tone}`}>{status.tone === 'success' ? <CheckCircle2 size={12} className="ms-1" /> : status.tone === 'danger' ? <XCircle size={12} className="ms-1" /> : null}{status.label}</span>
+                        <span className={`badge text-bg-${status.tone} event-status-badge`}>{status.tone === 'success' ? <CheckCircle2 size={12} /> : status.tone === 'danger' ? <XCircle size={12} /> : null}<span>{status.label}</span></span>
                         <div className="event-time">{new Date(event.receivedAt).toLocaleTimeString('fa-IR')}</div>
                       </div>
                     </div>

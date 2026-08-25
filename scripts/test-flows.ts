@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { isFollowClaimText, matchesAutomation, executableNodes, runtimeVersion } from '../src/lib/automationEngine';
 import { SAMPLE_AUTOMATION_ID, INITIAL_AUTOMATIONS } from '../src/lib/mockData';
 import { getWebhookIdentity } from '../src/lib/webhookDedupe';
-import { isOwnInstagramComment, splitInstagramWebhookPayload } from '../src/lib/instagramWebhook';
+import { hasDisplayableInstagramContent, isOwnInstagramComment, normalizeInstagramInbound, splitInstagramWebhookPayload } from '../src/lib/instagramWebhook';
 import { getInstagramUserProfile, replyToInstagramComment, sendInstagramMessage } from '../src/lib/metaClient';
 
 const sample = structuredClone(INITIAL_AUTOMATIONS.find((item) => item.id === SAMPLE_AUTOMATION_ID)!);
@@ -73,6 +73,27 @@ assert.equal(
 assert.equal(isOwnInstagramComment({ senderUsername: '@USDHunter.ir', connectedUsername: 'usdhunter.ir' }), true);
 assert.equal(isOwnInstagramComment({ senderId: '1', connectedAccountId: '2', senderUsername: 'customer', connectedUsername: 'usdhunter.ir' }), false);
 
+const sharedPost = normalizeInstagramInbound({
+  message: { mid: 'mid_share', attachments: [{ type: 'share', payload: { url: 'https://www.instagram.com/p/example/' } }] },
+});
+assert.equal(sharedPost.hasUserContent, true);
+assert.equal(sharedPost.content.attachmentType, 'share');
+assert.equal(sharedPost.content.attachmentLabel, 'پست، ریل یا استوری به‌اشتراک‌گذاشته‌شده');
+assert.equal(sharedPost.content.attachmentUrl, 'https://www.instagram.com/p/example/');
+
+const imageMessage = normalizeInstagramInbound({
+  id: 'graph_message',
+  attachments: { data: [{ type: 'image', image_data: { url: 'https://cdn.example.com/image.jpg' } }] },
+});
+assert.equal(imageMessage.content.mediaType, 'image');
+assert.equal(imageMessage.content.mediaUrl, 'https://cdn.example.com/image.jpg');
+assert.equal(hasDisplayableInstagramContent(imageMessage.content), true);
+
+const reactionMessage = normalizeInstagramInbound({ reaction: { action: 'react', emoji: '❤️' } });
+assert.equal(reactionMessage.displayText, 'واکنش ❤️');
+assert.equal(reactionMessage.hasUserContent, true);
+assert.equal(normalizeInstagramInbound({ read: { mid: 'mid_seen' } }).hasUserContent, false);
+
 const calls: Array<{ url: string; init?: RequestInit }> = [];
 const originalFetch = globalThis.fetch;
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -106,7 +127,16 @@ try {
   const privateReplyBody = JSON.parse(String(calls.at(-1)!.init?.body));
   assert.deepEqual(privateReplyBody, {
     recipient: { comment_id: 'comment_1' },
-    message: { text: 'ابتدا پیج را فالو کنید.' },
+    message: {
+      attachment: {
+        type: 'template',
+        payload: {
+          template_type: 'button',
+          text: 'ابتدا پیج را فالو کنید.',
+          buttons: [{ type: 'postback', title: 'فالو دارم', payload: 'FOLLOW_CLAIMED:sample' }],
+        },
+      },
+    },
   });
 
   await getInstagramUserProfile({
@@ -133,4 +163,4 @@ try {
   globalThis.fetch = originalFetch;
 }
 
-console.log('Flow validation passed: follow gate, 200-event identity load, postback, batching, self-comment guard and Meta request bodies.');
+console.log('Flow validation passed: follow gate, 200-event identity load, postback, batching, inbox normalization, self-comment guard and Meta request bodies.');

@@ -169,13 +169,7 @@ export async function sendInstagramMessage(
   const quickReplies = (content.quickReplies || []).filter((reply) => reply.title.trim()).slice(0, 13);
   const message: Record<string, unknown> = {};
 
-  // Meta allows exactly one text-only private reply to a comment. Templates,
-  // quick replies and follow-ups require an IGSID conversation after the
-  // recipient has replied and opened the standard messaging window.
-  if (options.commentId) {
-    if (!content.text?.trim()) throw new Error('A private reply to a comment requires text');
-    message.text = content.text.trim();
-  } else if (buttons.length) {
+  if (buttons.length) {
     message.attachment = {
       type: 'template',
       payload: {
@@ -203,15 +197,26 @@ export async function sendInstagramMessage(
     }));
   }
   if (!Object.keys(message).length) throw new Error('پیام سناریو متن، رسانه یا دکمه ندارد.');
-  return requestMeta<{ message_id?: string }>(url, {
+  const request = (requestMessage: Record<string, unknown>) => requestMeta<{ message_id?: string }>(url, {
     method: 'POST',
     headers: bearerHeaders(accessToken, { 'Content-Type': 'application/json' }),
     body: JSON.stringify({
       recipient: options.commentId ? { comment_id: options.commentId } : { id: options.recipientId },
       ...(!options.commentId ? { messaging_type: 'RESPONSE' } : {}),
-      message,
+      message: requestMessage,
     }),
   });
+
+  try {
+    return await request(message);
+  } catch (error) {
+    // Some account/API combinations still restrict a comment private reply to
+    // text. Preserve delivery as a safe fallback instead of dropping the lead.
+    if (options.commentId && buttons.length && content.text?.trim()) {
+      return request({ text: content.text.trim() });
+    }
+    throw error;
+  }
 }
 
 export async function replyToInstagramComment(

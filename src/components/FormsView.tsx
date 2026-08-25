@@ -65,8 +65,8 @@ export const FormsView: React.FC<FormsViewProps> = ({ forms, submissions, onCrea
           <p>اطلاعات موردنیاز را مرحله‌به‌مرحله از مخاطب بگیرید و قبل از انتشار، تجربهٔ پاسخ‌گویی را روی موبایل و دسکتاپ ببینید.</p>
         </div>
         <div className="workspace-page-actions">
-          <button type="button" onClick={handleCreateForm} className="btn btn-primary direct-primary-btn" disabled={creating}><Plus size={16} /> {creating ? 'در حال ساخت...' : 'ساخت فرم جدید'}</button>
-          <button type="button" onClick={handleExportCSV} className="topbar-oauth"><FileSpreadsheet size={16} /> خروجی CSV پاسخ‌ها</button>
+          <button type="button" onClick={handleCreateForm} className="btn ui-btn ui-btn-primary forms-action-btn" disabled={creating}><Plus size={16} /><span>{creating ? 'در حال ساخت...' : 'ساخت فرم جدید'}</span></button>
+          <button type="button" onClick={handleExportCSV} className="btn ui-btn ui-btn-secondary forms-action-btn"><FileSpreadsheet size={16} /><span>خروجی CSV پاسخ‌ها</span></button>
         </div>
       </header>
 

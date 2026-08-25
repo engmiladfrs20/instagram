@@ -38,7 +38,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({ products, onAddProdu
 
         <button
           onClick={() => setShowAddModal(true)}
-          className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs transition shadow-md shadow-purple-900/30 flex items-center space-x-1.5 space-x-reverse"
+          className="btn ui-btn ui-btn-primary products-add-btn"
         >
           <Plus className="w-4 h-4" />
           <span>افزودن محصول جدید</span>
@@ -129,13 +129,13 @@ export const ProductsView: React.FC<ProductsViewProps> = ({ products, onAddProdu
               <button
                 type="button"
                 onClick={() => setShowAddModal(false)}
-                className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300"
+                className="btn ui-btn ui-btn-secondary"
               >
                 انصراف
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 rounded-xl bg-purple-600 text-white font-bold"
+                className="btn ui-btn ui-btn-primary"
               >
                 ذخیره
               </button>

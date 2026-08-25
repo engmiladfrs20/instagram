@@ -57,7 +57,7 @@ export const ThemeControls: React.FC = () => {
   const selectedAccent = ACCENTS.find((accent) => accent.id === preferences.accent) || ACCENTS[0];
 
   return (
-    <div className="relative" ref={panelRef}>
+    <div className="theme-control" ref={panelRef}>
       <button
         type="button"
         onClick={() => setOpen((current) => !current)}
@@ -65,13 +65,13 @@ export const ThemeControls: React.FC = () => {
         aria-haspopup="dialog"
         aria-label="تنظیم ظاهر پنل"
         title="تنظیم ظاهر پنل"
-        className="flex items-center gap-2 rounded-lg border border-slate-700 px-2.5 py-1.5 text-xs text-slate-300 transition hover:border-purple-500/50 hover:text-slate-100"
+        className="theme-trigger"
       >
-        <Palette className="size-4" />
-        <span className="hidden sm:inline">ظاهر</span>
+        <Palette size={17} />
+        <span>ظاهر</span>
         <span
           aria-hidden="true"
-          className="size-2.5 rounded-full ring-2 ring-white/10"
+          className="theme-current-dot"
           style={{ backgroundColor: selectedAccent.color }}
         />
       </button>
@@ -80,17 +80,17 @@ export const ThemeControls: React.FC = () => {
         <div
           role="dialog"
           aria-label="تنظیمات ظاهر"
-          className="absolute left-0 top-full z-50 mt-3 w-72 rounded-2xl border border-slate-700 bg-slate-900 p-4 text-right shadow-2xl"
+          className="theme-popover"
         >
-          <div className="mb-4 flex items-start justify-between gap-3">
+          <div className="theme-popover-heading">
             <div>
-              <p className="text-sm font-bold text-white">ظاهر پنل</p>
-              <p className="mt-1 text-[11px] text-slate-400">حالت و رنگ اصلی رابط را انتخاب کنید.</p>
+              <p>ظاهر پنل</p>
+              <small>حالت و رنگ اصلی رابط را انتخاب کنید.</small>
             </div>
-            <span className="mt-1 size-3 rounded-full" style={{ backgroundColor: selectedAccent.color }} />
+            <span className="theme-heading-dot" style={{ backgroundColor: selectedAccent.color }} />
           </div>
 
-          <div className="mb-4 grid grid-cols-2 gap-2" role="group" aria-label="حالت رنگی">
+          <div className="theme-mode-grid" role="group" aria-label="حالت رنگی">
             {MODES.map(({ id, label, Icon }) => {
               const selected = preferences.mode === id;
               return (
@@ -99,23 +99,23 @@ export const ThemeControls: React.FC = () => {
                   type="button"
                   aria-pressed={selected}
                   onClick={() => updateMode(id)}
-                  className="flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition"
+                  className={`theme-mode-btn ${selected ? 'is-selected' : ''}`}
                   style={{
                     borderColor: selected ? selectedAccent.color : 'var(--color-slate-700)',
                     backgroundColor: selected ? `${selectedAccent.color}22` : 'transparent',
                     color: selected ? 'var(--color-slate-100)' : 'var(--color-slate-400)',
                   }}
                 >
-                  <Icon className="size-4" />
+                  <Icon size={17} />
                   {label}
                 </button>
               );
             })}
           </div>
 
-          <div>
-            <p className="mb-2 text-[11px] font-semibold text-slate-400">رنگ اصلی</p>
-            <div className="grid grid-cols-3 gap-2" role="group" aria-label="رنگ اصلی">
+          <div className="theme-accent-section">
+            <p>رنگ اصلی</p>
+            <div className="theme-accent-grid" role="group" aria-label="رنگ اصلی">
               {ACCENTS.map((accent) => {
                 const selected = preferences.accent === accent.id;
                 return (
@@ -125,11 +125,11 @@ export const ThemeControls: React.FC = () => {
                     aria-label={accent.label}
                     aria-pressed={selected}
                     onClick={() => updateAccent(accent.id)}
-                    className="flex items-center gap-2 rounded-xl border border-transparent px-2 py-2 text-[11px] text-slate-300 transition hover:bg-slate-800"
+                    className={`theme-accent-btn ${selected ? 'is-selected' : ''}`}
                     style={{ borderColor: selected ? accent.color : 'transparent' }}
                   >
-                    <span className="flex size-5 items-center justify-center rounded-full" style={{ backgroundColor: accent.color }}>
-                      {selected && <Check className="size-3 text-white" />}
+                    <span className="theme-accent-dot" style={{ backgroundColor: accent.color }}>
+                      {selected && <Check size={13} />}
                     </span>
                     <span>{accent.label}</span>
                   </button>
@@ -142,4 +142,3 @@ export const ThemeControls: React.FC = () => {
     </div>
   );
 };
-

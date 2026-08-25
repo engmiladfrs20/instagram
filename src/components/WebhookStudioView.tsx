@@ -118,25 +118,27 @@ export const WebhookStudioView: React.FC<WebhookStudioViewProps> = ({
             </div>
 
             {/* Special Test Scenarios Checkboxes */}
-            <div className="space-y-2 pt-2 border-t border-slate-800">
+            <div className="webhook-test-options">
               <span className="text-slate-400 font-medium block text-[11px]">سناریوهای تست خاص قوانین Meta:</span>
 
-              <label className="flex items-center space-x-2 space-x-reverse cursor-pointer text-slate-300">
+              <label className="webhook-check-row" htmlFor="expired-comment-check">
                 <input
+                  id="expired-comment-check"
                   type="checkbox"
                   checked={isExpiredComment}
                   onChange={(e) => setIsExpiredComment(e.target.checked)}
-                  className="rounded border-slate-800 bg-slate-950 text-amber-500 focus:ring-amber-500"
+                  className="form-check-input"
                 />
                 <span>شبیه‌سازی کامنت قدیمی‌تر از ۷ روز (نقض قوانین Meta)</span>
               </label>
 
-              <label className="flex items-center space-x-2 space-x-reverse cursor-pointer text-slate-300">
+              <label className="webhook-check-row" htmlFor="duplicate-event-check">
                 <input
+                  id="duplicate-event-check"
                   type="checkbox"
                   checked={isDuplicate}
                   onChange={(e) => setIsDuplicate(e.target.checked)}
-                  className="rounded border-slate-800 bg-slate-950 text-amber-500 focus:ring-amber-500"
+                  className="form-check-input"
                 />
                 <span>ارسال تکراری (تست سیستم Deduplication)</span>
               </label>
@@ -145,7 +147,7 @@ export const WebhookStudioView: React.FC<WebhookStudioViewProps> = ({
             <button
               onClick={handleRunSimulate}
               disabled={loading}
-              className="w-full py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold transition flex items-center justify-center space-x-2 space-x-reverse shadow-lg shadow-amber-900/20"
+              className="btn ui-btn ui-btn-warning webhook-run-btn"
             >
               {loading ? (
                 <RefreshCw className="w-4 h-4 animate-spin" />

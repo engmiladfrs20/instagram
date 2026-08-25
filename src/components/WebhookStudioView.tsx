@@ -149,14 +149,10 @@ export const WebhookStudioView: React.FC<WebhookStudioViewProps> = ({
               disabled={loading}
               className="btn ui-btn ui-btn-warning webhook-run-btn"
             >
-              {loading ? (
-                <RefreshCw className="w-4 h-4 animate-spin" />
-              ) : (
-                <>
-                  <Play className="w-4 h-4 fill-current" />
-                  <span>ارسال Webhook به Ingress Pipeline</span>
-                </>
-              )}
+              <span className="ui-btn-content">
+                {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
+                <span>{loading ? 'در حال ارسال...' : 'ارسال Webhook به Ingress Pipeline'}</span>
+              </span>
             </button>
           </div>
         </div>

@@ -40,8 +40,10 @@ export const ProductsView: React.FC<ProductsViewProps> = ({ products, onAddProdu
           onClick={() => setShowAddModal(true)}
           className="btn ui-btn ui-btn-primary products-add-btn"
         >
-          <Plus className="w-4 h-4" />
-          <span>افزودن محصول جدید</span>
+          <span className="ui-btn-content">
+            <Plus className="w-4 h-4" />
+            <span>افزودن محصول جدید</span>
+          </span>
         </button>
       </div>
 

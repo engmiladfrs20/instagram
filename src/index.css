@@ -1574,30 +1574,40 @@ button, .btn { border-radius: 13px; font-family: inherit; }
 /* A single internal flex row prevents RTL text and Lucide icons from being
    split or reordered by Bootstrap and legacy button declarations. */
 .ui-btn-content {
-  display: inline-flex !important;
+  position: relative;
+  display: grid !important;
+  inline-size: 100%;
+  block-size: 100%;
   min-width: 0;
-  align-items: center !important;
-  justify-content: center !important;
-  flex: 0 1 auto;
-  flex-direction: row !important;
-  gap: .5rem;
+  min-block-size: 1rem;
+  place-items: center !important;
+  flex: 1 1 auto;
   direction: rtl;
   line-height: 1 !important;
   white-space: nowrap !important;
 }
 
 .ui-btn-content > span {
-  display: inline-block;
+  grid-area: 1 / 1;
+  display: grid;
+  block-size: 100%;
+  place-items: center;
+  justify-self: center;
   line-height: 1 !important;
+  text-align: center;
   white-space: nowrap !important;
 }
 
 .ui-btn-content > svg {
-  position: static !important;
-  inset: auto !important;
+  position: absolute !important;
+  inset-block-start: 50% !important;
+  inset-inline-start: 0 !important;
+  inset-block-end: auto !important;
+  inset-inline-end: auto !important;
   display: block;
   flex: 0 0 auto;
   margin: 0 !important;
+  translate: 0 -50%;
   transform: none;
 }
 
@@ -1740,42 +1750,48 @@ button, .btn { border-radius: 13px; font-family: inherit; }
 }
 
 .event-row-meta {
-  inline-size: 104px;
-  flex-basis: 104px;
+  inline-size: 112px;
+  flex-basis: 112px;
   align-content: center;
 }
 
 .event-row-meta .event-status-badge {
-  inline-size: 104px;
-  block-size: 28px;
-  min-block-size: 28px;
-  gap: .32rem;
-  padding: 0 .7rem;
+  inline-size: 112px;
+  block-size: 30px;
+  min-block-size: 30px;
+  padding: 0 .65rem;
   border-radius: 999px !important;
   line-height: 1;
   white-space: nowrap !important;
 }
 
 .event-status-content {
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  flex-direction: row !important;
-  gap: .3rem;
+  position: relative;
+  display: grid !important;
+  inline-size: 100%;
+  block-size: 100%;
+  place-items: center !important;
   line-height: 1 !important;
   white-space: nowrap !important;
 }
 
 .event-status-content > svg {
-  position: static !important;
+  position: absolute !important;
+  inset-block-start: 50%;
+  inset-inline-start: 0;
   display: block;
   flex: 0 0 auto;
   margin: 0 !important;
+  translate: 0 -50%;
 }
 
 .event-status-content > span {
-  display: inline-block;
+  display: grid;
+  block-size: 100%;
+  place-items: center;
+  justify-self: center;
   line-height: 1 !important;
+  text-align: center;
   white-space: nowrap !important;
 }
 
@@ -1787,7 +1803,7 @@ button, .btn { border-radius: 13px; font-family: inherit; }
 
 /* Scenario, form and account action groups */
 .workspace-page-actions {
-  grid-template-columns: repeat(2, minmax(150px, 164px));
+  grid-template-columns: repeat(2, minmax(172px, 184px));
   gap: .7rem;
 }
 
@@ -1803,8 +1819,20 @@ button, .btn { border-radius: 13px; font-family: inherit; }
 .workspace-page-actions > .direct-create-menu > .direct-primary-btn,
 .workspace-page-actions > .direct-secondary-btn,
 .workspace-page-actions > .forms-action-btn {
-  block-size: var(--ui-control-height);
-  min-block-size: var(--ui-control-height);
+  block-size: 46px;
+  min-block-size: 46px;
+}
+
+.workspace-page-actions > .direct-secondary-btn {
+  color: var(--bs-body-color) !important;
+  border-color: color-mix(in srgb, var(--color-purple-500) 48%, var(--bs-border-color)) !important;
+  background: color-mix(in srgb, var(--color-purple-500) 7%, var(--builder-surface-soft)) !important;
+}
+
+.workspace-page-actions > .direct-secondary-btn:not(:disabled):hover {
+  color: var(--color-white) !important;
+  border-color: var(--color-purple-500) !important;
+  background: var(--color-purple-600) !important;
 }
 
 .direct-create-menu {
@@ -1840,7 +1868,8 @@ button, .btn { border-radius: 13px; font-family: inherit; }
 }
 
 .direct-account-primary {
-  min-width: 166px;
+  min-width: 184px;
+  min-height: 46px;
   color: var(--color-white) !important;
   border-color: var(--color-purple-500) !important;
   background: linear-gradient(135deg, var(--color-purple-600), var(--color-purple-700)) !important;
@@ -1869,7 +1898,7 @@ button, .btn { border-radius: 13px; font-family: inherit; }
 }
 
 .forms-action-btn {
-  min-width: 158px;
+  min-width: 180px;
 }
 
 .products-add-btn {

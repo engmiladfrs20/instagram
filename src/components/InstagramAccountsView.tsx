@@ -138,7 +138,7 @@ export const InstagramAccountsView: React.FC<InstagramAccountsViewProps> = ({
             <div><span><KeyRound size={15} /> انقضای Access Token</span><strong>{formatDate(instagramAccount.tokenExpiresAt)}</strong></div>
             <div><span><RefreshCw size={15} /> آخرین بررسی سلامت</span><strong>{formatDate(instagramAccount.lastTokenCheckAt)}</strong></div>
           </div>
-          <button type="button" className="btn direct-account-check-btn" onClick={handleVerify} disabled={checking}><RefreshCw size={15} /> {checking ? 'در حال بررسی...' : 'بررسی اتصال و توکن'}</button>
+          <button type="button" className="btn direct-account-check-btn" onClick={handleVerify} disabled={checking}><span className="ui-btn-content"><RefreshCw size={15} /><span>{checking ? 'در حال بررسی...' : 'بررسی اتصال و توکن'}</span></span></button>
         </aside>
       </section>
 

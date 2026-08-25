@@ -1344,3 +1344,176 @@ button, .btn { border-radius: 13px; font-family: inherit; }
     white-space: normal;
   }
 }
+
+/* Role-based button sizing. Controls that sit beside each other use the same
+   geometry, while icon-only controls keep their compact square footprint. */
+.dashboard-hero-actions {
+  display: grid;
+  grid-template-columns: repeat(2, 168px);
+  gap: .65rem;
+  align-items: center;
+  justify-content: end;
+}
+
+.dashboard-hero-actions .dashboard-action-btn {
+  inline-size: 168px;
+  block-size: 46px;
+  min-block-size: 46px;
+  padding-inline: .9rem;
+  justify-content: center;
+  border-radius: 13px;
+  font-size: .82rem;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.dashboard-manage-btn {
+  block-size: 44px;
+  min-block-size: 44px;
+  gap: .45rem;
+  border-radius: 13px;
+  font-size: .82rem;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.event-row-meta {
+  display: grid;
+  inline-size: 100px;
+  flex: 0 0 100px;
+  justify-items: center;
+  gap: .3rem;
+}
+
+.event-row-meta .event-status-badge {
+  inline-size: 100%;
+  block-size: 30px;
+  min-block-size: 30px;
+  padding: 0 .6rem;
+  border-radius: 9px;
+  font-size: .68rem;
+  font-weight: 850;
+  line-height: 1;
+  white-space: nowrap !important;
+}
+
+.event-row-meta .event-status-badge > span {
+  display: inline;
+  white-space: nowrap !important;
+}
+
+.event-row-meta .event-time {
+  inline-size: 100%;
+  margin-top: 0;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.workspace-page-actions {
+  display: grid;
+  grid-template-columns: repeat(2, 148px);
+  align-items: start;
+  gap: .65rem;
+}
+
+.workspace-page-actions > .direct-secondary-btn,
+.workspace-page-actions > .direct-create-menu,
+.workspace-page-actions > .direct-create-menu > .direct-primary-btn {
+  inline-size: 148px;
+  min-inline-size: 148px;
+}
+
+.workspace-page-actions > .direct-secondary-btn,
+.workspace-page-actions > .direct-create-menu > .direct-primary-btn {
+  block-size: 44px;
+  min-block-size: 44px;
+  padding-inline: .75rem;
+  font-size: .8rem;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.direct-create-hint {
+  inline-size: 148px;
+  min-block-size: 18px;
+  margin-top: .42rem;
+  font-size: .61rem;
+  line-height: 1.45;
+  white-space: normal;
+}
+
+.direct-scenario-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 92px);
+  align-items: center;
+  gap: .5rem;
+}
+
+.direct-scenario-actions .direct-edit-btn,
+.direct-scenario-actions .direct-delete-btn {
+  inline-size: 92px;
+  min-inline-size: 92px;
+  block-size: 42px;
+  min-block-size: 42px;
+  margin: 0;
+  padding: 0 .65rem;
+  border-radius: 12px;
+  font-size: .78rem;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.direct-scenario-actions .direct-delete-btn {
+  color: var(--color-rose-600);
+  border-color: color-mix(in srgb, var(--color-rose-500) 42%, var(--bs-border-color));
+  background: color-mix(in srgb, var(--color-rose-500) 8%, var(--builder-surface-soft));
+}
+
+@media (max-width: 1199.98px) {
+  .dashboard-hero-actions {
+    justify-content: start;
+  }
+}
+
+@media (max-width: 767.98px) {
+  .dashboard-hero-actions,
+  .workspace-page-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    inline-size: 100%;
+  }
+
+  .dashboard-hero-actions .dashboard-action-btn,
+  .workspace-page-actions > .direct-secondary-btn,
+  .workspace-page-actions > .direct-create-menu,
+  .workspace-page-actions > .direct-create-menu > .direct-primary-btn,
+  .direct-create-hint {
+    inline-size: 100%;
+    min-inline-size: 0;
+  }
+
+  .direct-scenario-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    inline-size: 100%;
+  }
+
+  .direct-scenario-actions .direct-edit-btn,
+  .direct-scenario-actions .direct-delete-btn {
+    inline-size: 100%;
+    min-inline-size: 0;
+  }
+
+  .event-row-meta {
+    inline-size: 92px;
+    flex-basis: 92px;
+  }
+}
+
+@media (max-width: 419.98px) {
+  .dashboard-hero-actions,
+  .workspace-page-actions {
+    grid-template-columns: 1fr;
+  }
+}

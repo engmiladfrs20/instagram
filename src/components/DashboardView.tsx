@@ -139,7 +139,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 عملکرد پیام‌ها، کامنت‌ها، پاسخ‌های خودکار و سرنخ‌های فروش را در یک نمای زنده دنبال کنید.
               </p>
             </div>
-            <div className="d-flex flex-wrap gap-2">
+            <div className="dashboard-hero-actions">
               <button className="btn btn-outline-warning dashboard-action-btn" onClick={() => onNavigate('webhook_studio')}>
                 <FlaskConical size={17} />
                 تست وب‌هوک
@@ -340,7 +340,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         </div>
                         <p className="small text-body-secondary text-truncate mb-0 mt-1">{eventText(event)}</p>
                       </div>
-                      <div className="text-start flex-shrink-0">
+                      <div className="event-row-meta flex-shrink-0">
                         <span className={`badge text-bg-${status.tone} event-status-badge`}>{status.tone === 'success' ? <CheckCircle2 size={12} /> : status.tone === 'danger' ? <XCircle size={12} /> : null}<span>{status.label}</span></span>
                         <div className="event-time">{new Date(event.receivedAt).toLocaleTimeString('fa-IR')}</div>
                       </div>
@@ -361,7 +361,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <div><span><Workflow size={16} /> سناریوهای خودکار</span><strong>{formatNumber(analytics.activeAutomations)}</strong></div>
               </div>
               <div className="mt-auto pt-4">
-                <button className="btn btn-primary w-100" onClick={() => onNavigate('automations')}>
+                <button className="btn btn-primary w-100 dashboard-manage-btn" onClick={() => onNavigate('automations')}>
                   مدیریت سناریوها
                   <ArrowUpLeft size={16} />
                 </button>

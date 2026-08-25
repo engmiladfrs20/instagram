@@ -88,7 +88,9 @@ export const AISettingsView: React.FC<AISettingsViewProps> = ({
       <section className="ai-panel">
         <div className="ai-panel-heading">
           <div><h2>تنظیمات پاسخ‌گویی</h2><p>قبل از فعال‌سازی، حداقل یک بخش اطلاعات کسب‌وکار اضافه کنید.</p></div>
-          <button type="button" onClick={save} disabled={busy} className="btn ui-btn ui-btn-primary ai-save-btn"><Save size={17} /><span>ذخیره تنظیمات</span></button>
+          <button type="button" onClick={save} disabled={busy} className="btn ui-btn ui-btn-primary ai-save-btn">
+            <span className="ui-btn-content"><Save size={17} /><span>ذخیره تنظیمات</span></span>
+          </button>
         </div>
 
         <div className="ai-settings-grid">
@@ -125,7 +127,9 @@ export const AISettingsView: React.FC<AISettingsViewProps> = ({
           <input value={knowledgeTitle} onChange={(event) => setKnowledgeTitle(event.target.value)} placeholder="عنوان، مثلاً قوانین ارسال" className="form-control ai-control" />
           <textarea value={knowledgeContent} onChange={(event) => setKnowledgeContent(event.target.value)} rows={3} placeholder="متن دقیق و قابل استناد برای دستیار" className="form-control ai-control" />
         </div>
-        <button type="button" onClick={addKnowledge} disabled={busy || !knowledgeTitle.trim() || !knowledgeContent.trim()} className="btn ui-btn ui-btn-secondary ai-add-btn"><Plus size={17} /><span>افزودن اطلاعات</span></button>
+          <button type="button" onClick={addKnowledge} disabled={busy || !knowledgeTitle.trim() || !knowledgeContent.trim()} className="btn ui-btn ui-btn-secondary ai-add-btn">
+            <span className="ui-btn-content"><Plus size={17} /><span>افزودن اطلاعات</span></span>
+          </button>
         <div className="ai-knowledge-list">
           {knowledgeItems.length === 0 && <p className="ai-empty-state">هنوز اطلاعاتی ثبت نشده است.</p>}
           {knowledgeItems.map((item) => <article key={item.id} className="ai-knowledge-item"><div><h3>{item.title}</h3><p>{item.content}</p></div><button type="button" onClick={() => onDeleteKnowledge(item.id)} className="ai-icon-btn is-danger" aria-label={`حذف ${item.title}`}><Trash2 size={17} /></button></article>)}
@@ -136,7 +140,9 @@ export const AISettingsView: React.FC<AISettingsViewProps> = ({
         <div className="ai-panel-heading ai-panel-heading-simple"><div><h2>تست قبل از اتصال به اینستاگرام</h2><p>یک پیام نمونه بفرستید تا پاسخ واقعی Gemini را ببینید.</p></div></div>
         <div className="ai-test-row">
           <textarea value={testText} onChange={(event) => setTestText(event.target.value)} rows={2} className="form-control ai-control" />
-          <button type="button" onClick={test} disabled={busy || !testText.trim()} className="btn ui-btn ui-btn-success ai-test-btn">{busy ? <Loader2 size={17} className="spin" /> : <Send size={17} />}<span>تست پاسخ</span></button>
+          <button type="button" onClick={test} disabled={busy || !testText.trim()} className="btn ui-btn ui-btn-success ai-test-btn">
+            <span className="ui-btn-content">{busy ? <Loader2 size={17} className="spin" /> : <Send size={17} />}<span>تست پاسخ</span></span>
+          </button>
         </div>
         {testAnswer && <div className="ai-test-answer"><span>پاسخ Gemini</span>{testAnswer}</div>}
       </section>

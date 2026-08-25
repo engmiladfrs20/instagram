@@ -103,7 +103,7 @@ export const InstagramAccountsView: React.FC<InstagramAccountsViewProps> = ({
           </div>
         </div>
         <button type="button" className="btn direct-account-primary" onClick={() => setShowOAuthModal(true)}>
-          <KeyRound size={16} /> اتصال اکانت جدید
+          <span className="ui-btn-content"><KeyRound size={16} /><span>اتصال اکانت جدید</span></span>
         </button>
       </header>
 
@@ -122,7 +122,7 @@ export const InstagramAccountsView: React.FC<InstagramAccountsViewProps> = ({
           </div>
 
           <button type="button" className="btn direct-account-wide-btn" onClick={() => setShowOAuthModal(true)}>
-            رفتن به اتصال اکانت <ArrowRight size={16} />
+            <span className="ui-btn-content"><ArrowRight size={16} /><span>رفتن به اتصال اکانت</span></span>
           </button>
           <div className="direct-account-note"><ShieldCheck size={16} /><span>این اتصال از OAuth رسمی Meta استفاده می‌کند؛ InstaFlow هیچ‌وقت رمز اینستاگرام شما را دریافت یا ذخیره نمی‌کند.</span></div>
         </article>
@@ -153,7 +153,7 @@ export const InstagramAccountsView: React.FC<InstagramAccountsViewProps> = ({
         <div className="direct-account-modal-header"><div><span className="direct-eyebrow">اتصال امن</span><h3 id="oauth-title">آماده اتصال به اینستاگرام هستید؟</h3></div><button type="button" onClick={() => setShowOAuthModal(false)} aria-label="بستن"><X size={18} /></button></div>
         <p className="direct-account-modal-copy">با انتخاب ادامه، به صفحه رسمی Instagram منتقل می‌شوید. رمز عبور در اختیار InstaFlow قرار نمی‌گیرد.</p>
         <div className="direct-modal-scope-list">{requestedScopes.map(([scope, label]) => <div key={scope}><CheckCircle2 size={15} /><span>{label}</span></div>)}</div>
-        <div className="direct-account-modal-actions"><button type="button" className="btn direct-account-cancel" onClick={() => setShowOAuthModal(false)}>انصراف</button><button type="button" className="btn direct-account-primary" onClick={handleStartOAuth} disabled={checking}>{checking ? 'در حال انتقال...' : 'ادامه در Instagram'} <ExternalLink size={15} /></button></div>
+        <div className="direct-account-modal-actions"><button type="button" className="btn direct-account-cancel" onClick={() => setShowOAuthModal(false)}>انصراف</button><button type="button" className="btn direct-account-primary" onClick={handleStartOAuth} disabled={checking}><span className="ui-btn-content"><ExternalLink size={15} /><span>{checking ? 'در حال انتقال...' : 'ادامه در Instagram'}</span></span></button></div>
       </div></div>}
     </div>
   );

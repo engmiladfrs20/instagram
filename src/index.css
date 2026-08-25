@@ -1571,6 +1571,36 @@ button, .btn { border-radius: 13px; font-family: inherit; }
   white-space: nowrap;
 }
 
+/* A single internal flex row prevents RTL text and Lucide icons from being
+   split or reordered by Bootstrap and legacy button declarations. */
+.ui-btn-content {
+  display: inline-flex !important;
+  min-width: 0;
+  align-items: center !important;
+  justify-content: center !important;
+  flex: 0 1 auto;
+  flex-direction: row !important;
+  gap: .5rem;
+  direction: rtl;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+}
+
+.ui-btn-content > span {
+  display: inline-block;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+}
+
+.ui-btn-content > svg {
+  position: static !important;
+  inset: auto !important;
+  display: block;
+  flex: 0 0 auto;
+  margin: 0 !important;
+  transform: none;
+}
+
 .ui-btn > svg,
 .dashboard-action-btn > svg,
 .dashboard-manage-btn > svg,
@@ -1685,8 +1715,28 @@ button, .btn { border-radius: 13px; font-family: inherit; }
   font-size: .82rem;
 }
 
-.dashboard-hero-actions .btn-primary {
+.dashboard-action-primary {
+  color: var(--color-white) !important;
+  border-color: var(--color-purple-500) !important;
+  background: linear-gradient(135deg, var(--color-purple-600), var(--color-purple-700)) !important;
   box-shadow: 0 11px 26px color-mix(in srgb, var(--color-purple-600) 22%, transparent);
+}
+
+.dashboard-action-primary:hover {
+  color: var(--color-white) !important;
+  border-color: var(--color-purple-400) !important;
+  background: linear-gradient(135deg, var(--color-purple-500), var(--color-purple-700)) !important;
+}
+
+.dashboard-action-secondary {
+  color: var(--color-purple-300) !important;
+  border-color: var(--color-purple-500) !important;
+  background: color-mix(in srgb, var(--color-purple-600) 9%, var(--builder-surface)) !important;
+}
+
+.dashboard-action-secondary:hover {
+  color: var(--color-white) !important;
+  background: color-mix(in srgb, var(--color-purple-600) 24%, var(--builder-surface)) !important;
 }
 
 .event-row-meta {
@@ -1703,6 +1753,29 @@ button, .btn { border-radius: 13px; font-family: inherit; }
   padding: 0 .7rem;
   border-radius: 999px !important;
   line-height: 1;
+  white-space: nowrap !important;
+}
+
+.event-status-content {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex-direction: row !important;
+  gap: .3rem;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+}
+
+.event-status-content > svg {
+  position: static !important;
+  display: block;
+  flex: 0 0 auto;
+  margin: 0 !important;
+}
+
+.event-status-content > span {
+  display: inline-block;
+  line-height: 1 !important;
   white-space: nowrap !important;
 }
 
@@ -1768,11 +1841,26 @@ button, .btn { border-radius: 13px; font-family: inherit; }
 
 .direct-account-primary {
   min-width: 166px;
+  color: var(--color-white) !important;
+  border-color: var(--color-purple-500) !important;
+  background: linear-gradient(135deg, var(--color-purple-600), var(--color-purple-700)) !important;
+  box-shadow: 0 11px 26px color-mix(in srgb, var(--color-purple-600) 25%, transparent) !important;
 }
 
 .direct-account-wide-btn {
   min-height: 46px;
+  color: var(--color-white) !important;
+  border-color: var(--color-purple-500) !important;
   border-radius: 14px !important;
+  background: linear-gradient(135deg, var(--color-purple-600), var(--color-purple-700)) !important;
+  box-shadow: 0 11px 26px color-mix(in srgb, var(--color-purple-600) 22%, transparent) !important;
+}
+
+.direct-account-primary:hover,
+.direct-account-wide-btn:hover {
+  color: var(--color-white) !important;
+  border-color: var(--color-purple-400) !important;
+  background: linear-gradient(135deg, var(--color-purple-500), var(--color-purple-700)) !important;
 }
 
 .direct-account-check-btn,
@@ -2244,7 +2332,11 @@ textarea.ai-control { resize: vertical; }
   align-items: stretch;
 }
 
-.ai-test-btn { min-height: 100%; }
+.ai-test-btn {
+  align-self: center;
+  min-height: var(--ui-control-height);
+  block-size: var(--ui-control-height);
+}
 
 .ai-test-answer {
   margin-top: .8rem;

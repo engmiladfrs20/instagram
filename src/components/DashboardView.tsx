@@ -140,14 +140,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </p>
             </div>
             <div className="dashboard-hero-actions">
-              <button className="btn btn-outline-warning dashboard-action-btn" onClick={() => onNavigate('webhook_studio')}>
-                <FlaskConical size={17} />
-                تست وب‌هوک
+              <button className="btn dashboard-action-btn dashboard-action-secondary" onClick={() => onNavigate('webhook_studio')}>
+                <span className="ui-btn-content">
+                  <FlaskConical size={17} />
+                  <span>تست وب‌هوک</span>
+                </span>
               </button>
-              <button className="btn btn-primary dashboard-action-btn" onClick={() => onNavigate('automations')}>
-                <Workflow size={17} />
-                ساخت اتوماسیون
-                <ArrowUpLeft size={15} />
+              <button className="btn dashboard-action-btn dashboard-action-primary" onClick={() => onNavigate('automations')}>
+                <span className="ui-btn-content">
+                  <Workflow size={17} />
+                  <span>ساخت اتوماسیون</span>
+                </span>
               </button>
             </div>
           </div>
@@ -341,7 +344,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         <p className="small text-body-secondary text-truncate mb-0 mt-1">{eventText(event)}</p>
                       </div>
                       <div className="event-row-meta flex-shrink-0">
-                        <span className={`badge text-bg-${status.tone} event-status-badge`}>{status.tone === 'success' ? <CheckCircle2 size={12} /> : status.tone === 'danger' ? <XCircle size={12} /> : null}<span>{status.label}</span></span>
+                        <span className={`badge text-bg-${status.tone} event-status-badge`}>
+                          <span className="event-status-content">
+                            {status.tone === 'success' ? <CheckCircle2 size={12} /> : status.tone === 'danger' ? <XCircle size={12} /> : null}
+                            <span>{status.label}</span>
+                          </span>
+                        </span>
                         <div className="event-time">{new Date(event.receivedAt).toLocaleTimeString('fa-IR')}</div>
                       </div>
                     </div>
@@ -362,8 +370,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </div>
               <div className="mt-auto pt-4">
                 <button className="btn btn-primary w-100 dashboard-manage-btn" onClick={() => onNavigate('automations')}>
-                  مدیریت سناریوها
-                  <ArrowUpLeft size={16} />
+                  <span className="ui-btn-content"><ArrowUpLeft size={16} /><span>مدیریت سناریوها</span></span>
                 </button>
               </div>
             </div>

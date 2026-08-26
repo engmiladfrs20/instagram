@@ -250,7 +250,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <HealthRow label="مسدودسازی سیاستی" value={analytics.policyBlockRate} tone="warning" inverse />
                 <HealthRow label="نرخ تبدیل" value={analytics.conversionRate} tone="primary" />
               </div>
-              <button className="btn btn-sm btn-outline-secondary w-100 mt-4" onClick={() => onNavigate('analytics')}>
+              <button className="btn btn-sm btn-outline-secondary w-100 mt-4 dashboard-report-btn" onClick={() => onNavigate('analytics')}>
                 مشاهده گزارش کامل
                 <ArrowUpRight size={15} className="me-1" />
               </button>

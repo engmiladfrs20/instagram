@@ -1379,6 +1379,22 @@ button, .btn { border-radius: 13px; font-family: inherit; }
   white-space: nowrap;
 }
 
+.dashboard-report-btn,
+.dashboard-link {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: .42rem;
+  line-height: 1;
+  white-space: nowrap !important;
+}
+
+.dashboard-report-btn > svg,
+.dashboard-link > svg {
+  flex: 0 0 auto;
+  margin: 0 !important;
+}
+
 .event-row-meta {
   display: grid;
   inline-size: 100px;

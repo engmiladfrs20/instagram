@@ -1285,7 +1285,7 @@ button, .btn { border-radius: 13px; font-family: inherit; }
 }
 
 .event-status-badge {
-  display: inline-flex;
+  display: inline-flex !important;
   min-height: 24px;
   align-items: center;
   justify-content: center;

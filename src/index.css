@@ -1231,11 +1231,11 @@ button, .btn { border-radius: 13px; font-family: inherit; }
 .direct-test-btn,
 .direct-inline-btn,
 .direct-add-question {
-  display: inline-flex;
+  display: inline-flex !important;
   min-width: 0;
   min-height: 40px;
-  align-items: center;
-  justify-content: center;
+  align-items: center !important;
+  justify-content: center !important;
   gap: .4rem;
   padding: .55rem .85rem;
   border-radius: 12px;
@@ -1542,10 +1542,10 @@ button, .btn { border-radius: 13px; font-family: inherit; }
 .forms-action-btn,
 .products-add-btn,
 .webhook-run-btn {
-  display: inline-flex;
+  display: inline-flex !important;
   min-height: var(--ui-control-height);
-  align-items: center;
-  justify-content: center;
+  align-items: center !important;
+  justify-content: center !important;
   gap: .48rem;
   padding: .64rem 1rem;
   border-radius: var(--ui-control-radius) !important;

@@ -1574,40 +1574,40 @@ button, .btn { border-radius: 13px; font-family: inherit; }
 /* A single internal flex row prevents RTL text and Lucide icons from being
    split or reordered by Bootstrap and legacy button declarations. */
 .ui-btn-content {
-  position: relative;
-  display: grid !important;
-  inline-size: 100%;
-  block-size: 100%;
+  display: inline-flex !important;
+  inline-size: auto;
+  block-size: auto;
   min-width: 0;
   min-block-size: 1rem;
-  place-items: center !important;
-  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 0.48rem;
+  flex: 0 1 auto;
   direction: rtl;
   line-height: 1 !important;
   white-space: nowrap !important;
 }
 
 .ui-btn-content > span {
-  grid-area: 1 / 1;
-  display: grid;
-  block-size: 100%;
-  place-items: center;
-  justify-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  block-size: auto;
   line-height: 1 !important;
   text-align: center;
   white-space: nowrap !important;
 }
 
 .ui-btn-content > svg {
-  position: absolute !important;
-  inset-block-start: 50% !important;
-  inset-inline-start: 0 !important;
+  position: static !important;
+  inset-block-start: auto !important;
+  inset-inline-start: auto !important;
   inset-block-end: auto !important;
   inset-inline-end: auto !important;
   display: block;
   flex: 0 0 auto;
   margin: 0 !important;
-  translate: 0 -50%;
+  translate: none;
   transform: none;
 }
 
@@ -1766,30 +1766,35 @@ button, .btn { border-radius: 13px; font-family: inherit; }
 }
 
 .event-status-content {
-  position: relative;
-  display: grid !important;
-  inline-size: 100%;
-  block-size: 100%;
-  place-items: center !important;
+  display: inline-flex !important;
+  inline-size: auto;
+  block-size: auto;
+  min-block-size: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 0.28rem;
+  direction: rtl;
   line-height: 1 !important;
   white-space: nowrap !important;
 }
 
 .event-status-content > svg {
-  position: absolute !important;
-  inset-block-start: 50%;
-  inset-inline-start: 0;
+  position: static !important;
+  inset-block-start: auto;
+  inset-inline-start: auto;
+  inset-block-end: auto;
+  inset-inline-end: auto;
   display: block;
   flex: 0 0 auto;
   margin: 0 !important;
-  translate: 0 -50%;
+  translate: none;
 }
 
 .event-status-content > span {
-  display: grid;
-  block-size: 100%;
-  place-items: center;
-  justify-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  block-size: auto;
   line-height: 1 !important;
   text-align: center;
   white-space: nowrap !important;
